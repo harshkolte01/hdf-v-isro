@@ -6452,6 +6452,14 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
       </svg>
     `;
         }
+        if (kind === "intensity") {
+            return `
+      <svg class="line-tool-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M4 4h8M8 2v4"></path>
+        <path d="M4 12h8"></path>
+      </svg>
+    `;
+        }
         if (kind === "zoom-out") {
             return `
       <svg class="line-tool-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
@@ -6831,6 +6839,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         <div class="line-tool-group">
           ${renderIconToolButton("Hand", "data-heatmap-pan-toggle", "pan")}
           ${renderIconToolButton("Plotting", "data-heatmap-plot-toggle", "plot")}
+          ${renderIconToolButton("Intensity", "data-heatmap-intensity-toggle", "intensity")}
           ${renderIconToolButton("Zoom in", "data-heatmap-zoom-in", "zoom-in")}
           ${renderIconToolButton("Zoom out", "data-heatmap-zoom-out", "zoom-out")}
           ${renderIconToolButton("Reset view", "data-heatmap-reset-view", "reset")}
@@ -6850,6 +6859,38 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
           aria-label="${isImageMode ? "Grayscale image view" : "Heatmap chart"}"
         >
           <canvas class="heatmap-canvas" data-heatmap-surface="true"></canvas>
+          ${`
+          <div
+            class="heatmap-intensity-overlay"
+            data-heatmap-intensity-overlay="true"
+            hidden
+            aria-hidden="true"
+          >
+            <div
+              class="heatmap-intensity-mask heatmap-intensity-mask-upper"
+              data-heatmap-intensity-mask="upper"
+            ></div>
+            <div class="heatmap-intensity-window" data-heatmap-intensity-window="true"></div>
+            <div
+              class="heatmap-intensity-mask heatmap-intensity-mask-lower"
+              data-heatmap-intensity-mask="lower"
+            ></div>
+            <button
+              type="button"
+              class="heatmap-intensity-handle heatmap-intensity-handle-max"
+              data-heatmap-intensity-handle="max"
+              aria-label="Upper intensity bound"
+              title="Upper intensity bound"
+            ></button>
+            <button
+              type="button"
+              class="heatmap-intensity-handle heatmap-intensity-handle-min"
+              data-heatmap-intensity-handle="min"
+              aria-label="Lower intensity bound"
+              title="Lower intensity bound"
+            ></button>
+          </div>
+          `}
           <div class="line-hover" data-heatmap-hover="true" hidden></div>
         </div>
       </div>
@@ -10485,6 +10526,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const tooltip = shell.querySelector("[data-heatmap-hover]");
         const panToggleButton = shell.querySelector("[data-heatmap-pan-toggle]");
         const plotToggleButton = shell.querySelector("[data-heatmap-plot-toggle]");
+        const intensityToggleButton = shell.querySelector("[data-heatmap-intensity-toggle]");
         const zoomInButton = shell.querySelector("[data-heatmap-zoom-in]");
         const zoomOutButton = shell.querySelector("[data-heatmap-zoom-out]");
         const resetButton = shell.querySelector("[data-heatmap-reset-view]");
@@ -10495,6 +10537,12 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const maxStat = shell.querySelector("[data-heatmap-stat-max]");
         const rangeStat = shell.querySelector("[data-heatmap-stat-range]");
         const histogramRoot = shell.querySelector("[data-image-histogram-root]");
+        const intensityOverlay = shell.querySelector("[data-heatmap-intensity-overlay]");
+        const intensityWindow = shell.querySelector("[data-heatmap-intensity-window]");
+        const intensityUpperMask = shell.querySelector('[data-heatmap-intensity-mask="upper"]');
+        const intensityLowerMask = shell.querySelector('[data-heatmap-intensity-mask="lower"]');
+        const intensityMinHandle = shell.querySelector('[data-heatmap-intensity-handle="min"]');
+        const intensityMaxHandle = shell.querySelector('[data-heatmap-intensity-handle="max"]');
         let linkedPlotPanel = shell.querySelector("[data-heatmap-linked-plot]");
         let linkedPlotTitle = shell.querySelector("[data-heatmap-linked-title]");
         let linkedPlotShellHost = shell.querySelector("[data-heatmap-linked-shell-host]");
@@ -10621,6 +10669,12 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             loadedPhase: "preview",
             fullscreenActive: false,
             loadSequence: 0,
+            intensityEnabled: false,
+            intensityMin: null,
+            intensityMax: null,
+            intensityDragHandle: null,
+            intensityPointerId: null,
+            intensityDragTarget: null,
         };
         let pendingSelectionUpdate = null;
         let selectionUpdateTimer = null;
@@ -10651,6 +10705,151 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                         ? `size: ${(runtime.rows * runtime.cols).toLocaleString()} cells`
                         : "size: --";
             }
+        }
+
+        function getRawIntensityBounds() {
+            const rawMin = Number.isFinite(runtime.min) ? runtime.min : 0;
+            let rawMax = Number.isFinite(runtime.max) ? runtime.max : rawMin + 1;
+            if (!(rawMax > rawMin)) {
+                rawMax = rawMin + 1;
+            }
+            return { rawMin, rawMax };
+        }
+
+        function getIntensityMinimumGap(rawMin, rawMax) {
+            return Math.max((rawMax - rawMin) / 1024, 1e-6);
+        }
+
+        function syncIntensityRangeToData() {
+            const { rawMin, rawMax } = getRawIntensityBounds();
+            if (!runtime.intensityEnabled) {
+                runtime.intensityMin = rawMin;
+                runtime.intensityMax = rawMax;
+                return {
+                    rawMin,
+                    rawMax,
+                    displayMin: rawMin,
+                    displayMax: rawMax,
+                };
+            }
+
+            const minGap = getIntensityMinimumGap(rawMin, rawMax);
+            let nextMin = Number.isFinite(runtime.intensityMin) ? runtime.intensityMin : rawMin;
+            let nextMax = Number.isFinite(runtime.intensityMax) ? runtime.intensityMax : rawMax;
+            nextMin = clamp(nextMin, rawMin, rawMax - minGap);
+            nextMax = clamp(nextMax, nextMin + minGap, rawMax);
+            runtime.intensityMin = nextMin;
+            runtime.intensityMax = nextMax;
+
+            return {
+                rawMin,
+                rawMax,
+                displayMin: nextMin,
+                displayMax: nextMax,
+            };
+        }
+
+        function syncIntensityToggleState() {
+            const canAdjustIntensity =
+                runtime.rows > 0 &&
+                runtime.cols > 0 &&
+                Number.isFinite(runtime.min) &&
+                Number.isFinite(runtime.max) &&
+                runtime.max > runtime.min;
+
+            if (intensityToggleButton) {
+                intensityToggleButton.disabled = !canAdjustIntensity;
+                intensityToggleButton.classList.toggle("active", runtime.intensityEnabled && canAdjustIntensity);
+                const label = runtime.intensityEnabled ? "Disable intensity window" : "Intensity";
+                intensityToggleButton.setAttribute("aria-label", label);
+                intensityToggleButton.setAttribute("title", label);
+            }
+            if (intensityOverlay) {
+                intensityOverlay.hidden = !(canAdjustIntensity && runtime.intensityEnabled && runtime.layout);
+            }
+        }
+
+        function updateIntensityOverlay() {
+            if (!intensityOverlay) {
+                return;
+            }
+            syncIntensityToggleState();
+            if (intensityOverlay.hidden || !runtime.layout) {
+                return;
+            }
+
+            const { rawMin, rawMax, displayMin, displayMax } = syncIntensityRangeToData();
+            const valueRange = rawMax - rawMin || 1;
+            const layout = runtime.layout;
+            const barLeft = layout.colorBarX;
+            const barTop = layout.colorBarY;
+            const barWidth = layout.colorBarWidth;
+            const barHeight = layout.chartHeight;
+            const upperY = barTop + ((rawMax - displayMax) / valueRange) * barHeight;
+            const lowerY = barTop + ((rawMax - displayMin) / valueRange) * barHeight;
+            const windowHeight = Math.max(2, lowerY - upperY);
+            const handleX = barLeft + barWidth / 2;
+            const upperMaskHeight = Math.max(0, upperY - barTop);
+            const lowerMaskTop = clamp(lowerY, barTop, barTop + barHeight);
+            const lowerMaskHeight = Math.max(0, barTop + barHeight - lowerMaskTop);
+
+            if (intensityUpperMask) {
+                intensityUpperMask.style.left = `${barLeft}px`;
+                intensityUpperMask.style.top = `${barTop}px`;
+                intensityUpperMask.style.width = `${barWidth}px`;
+                intensityUpperMask.style.height = `${upperMaskHeight}px`;
+            }
+            if (intensityLowerMask) {
+                intensityLowerMask.style.left = `${barLeft}px`;
+                intensityLowerMask.style.top = `${lowerMaskTop}px`;
+                intensityLowerMask.style.width = `${barWidth}px`;
+                intensityLowerMask.style.height = `${lowerMaskHeight}px`;
+            }
+            if (intensityWindow) {
+                intensityWindow.style.left = `${barLeft}px`;
+                intensityWindow.style.top = `${upperY}px`;
+                intensityWindow.style.width = `${barWidth}px`;
+                intensityWindow.style.height = `${windowHeight}px`;
+            }
+            if (intensityMaxHandle) {
+                intensityMaxHandle.style.left = `${handleX}px`;
+                intensityMaxHandle.style.top = `${upperY}px`;
+                intensityMaxHandle.setAttribute("title", `Upper intensity: ${formatScaleValue(displayMax)}`);
+                intensityMaxHandle.setAttribute("aria-label", `Upper intensity: ${formatScaleValue(displayMax)}`);
+            }
+            if (intensityMinHandle) {
+                intensityMinHandle.style.left = `${handleX}px`;
+                intensityMinHandle.style.top = `${lowerY}px`;
+                intensityMinHandle.setAttribute("title", `Lower intensity: ${formatScaleValue(displayMin)}`);
+                intensityMinHandle.setAttribute("aria-label", `Lower intensity: ${formatScaleValue(displayMin)}`);
+            }
+        }
+
+        function rebuildHeatmapBitmap() {
+            if (!(runtime.values instanceof Float64Array) || runtime.rows <= 0 || runtime.cols <= 0) {
+                runtime.bitmap = null;
+                syncIntensityToggleState();
+                updateIntensityOverlay();
+                return false;
+            }
+
+            const { displayMin, displayMax } = syncIntensityRangeToData();
+            const bitmap = createHeatmapBitmap(
+                {
+                    rows: runtime.rows,
+                    cols: runtime.cols,
+                    values: runtime.values,
+                },
+                displayMin,
+                displayMax,
+                runtime.colormap
+            );
+            if (!bitmap) {
+                return false;
+            }
+            runtime.bitmap = bitmap;
+            syncIntensityToggleState();
+            return true;
         }
 
         function getImageHistogramApi() {
@@ -10765,6 +10964,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 plotAxis: runtime.plotAxis === "col" ? "col" : "row",
                 linkedPlotOpen: runtime.linkedPlotOpen === true && persistedCell !== null,
                 selectedCell: persistedCell,
+                intensityEnabled: runtime.intensityEnabled === true,
+                intensityMin: runtime.intensityMin,
+                intensityMax: runtime.intensityMax,
             });
             if (HEATMAP_SELECTION_VIEW_CACHE.size > HEATMAP_SELECTION_CACHE_LIMIT) {
                 const oldestKey = HEATMAP_SELECTION_VIEW_CACHE.keys().next().value;
@@ -10817,17 +11019,12 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             const cachedMax = Number(cachedData.max);
             const min = Number.isFinite(cachedMin) ? cachedMin : 0;
             const max = Number.isFinite(cachedMax) && cachedMax !== min ? cachedMax : min + 1;
-            const bitmap = createHeatmapBitmap(grid, min, max, runtime.colormap);
-            if (!bitmap) {
-                return false;
-            }
 
             runtime.rows = grid.rows;
             runtime.cols = grid.cols;
             runtime.values = grid.values;
             runtime.min = min;
             runtime.max = max;
-            runtime.bitmap = bitmap;
             runtime.maxSizeClamped = cachedData.maxSizeClamped === true;
             runtime.effectiveMaxSize = Number(cachedData.effectiveMaxSize) || HEATMAP_MAX_SIZE;
             runtime.loadedPhase = cachedData.phase === "highres" ? "highres" : "preview";
@@ -10843,6 +11040,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 runtime.plotAxis = cachedView.plotAxis === "col" ? "col" : "row";
                 runtime.selectedCell = normalizeSelectedCell(cachedView.selectedCell);
                 runtime.linkedPlotOpen = cachedView.linkedPlotOpen === true && runtime.selectedCell !== null;
+                runtime.intensityEnabled = cachedView.intensityEnabled === true;
+                runtime.intensityMin = toFiniteNumber(cachedView.intensityMin);
+                runtime.intensityMax = toFiniteNumber(cachedView.intensityMax);
             } else {
                 runtime.zoom = HEATMAP_MIN_ZOOM;
                 runtime.panX = 0;
@@ -10851,6 +11051,13 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 runtime.plotAxis = "row";
                 runtime.selectedCell = null;
                 runtime.linkedPlotOpen = false;
+                runtime.intensityEnabled = false;
+                runtime.intensityMin = min;
+                runtime.intensityMax = max;
+            }
+
+            if (!rebuildHeatmapBitmap()) {
+                return false;
             }
 
             hideTooltip();
@@ -11211,6 +11418,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 plotToggleButton.setAttribute("aria-label", label);
                 plotToggleButton.setAttribute("title", label);
             }
+            syncIntensityToggleState();
         }
 
         function setDocumentFullscreenLock(locked) {
@@ -11505,6 +11713,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 layout.colorBarX + layout.colorBarWidth + 6,
                 layout.colorBarY + layout.chartHeight - 2
             );
+            updateIntensityOverlay();
         }
 
         function applyZoom(nextZoom, anchorX = null, anchorY = null) {
@@ -11640,6 +11849,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                     plottingEnabled: runtime.plottingEnabled === true,
                     plotAxis: runtime.plotAxis === "col" ? "col" : "row",
                     linkedPlotOpen: runtime.linkedPlotOpen === true,
+                    intensityEnabled: runtime.intensityEnabled === true,
+                    intensityMin: runtime.intensityMin,
+                    intensityMax: runtime.intensityMax,
                 }
                 : null;
 
@@ -11690,17 +11902,11 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                     max = min + 1;
                 }
 
-                const bitmap = createHeatmapBitmap(grid, min, max, runtime.colormap);
-                if (!bitmap) {
-                    throw new Error("Failed to build heatmap canvas");
-                }
-
                 runtime.rows = grid.rows;
                 runtime.cols = grid.cols;
                 runtime.values = grid.values;
                 runtime.min = min;
                 runtime.max = max;
-                runtime.bitmap = bitmap;
                 if (preservedView) {
                     runtime.zoom = clamp(preservedView.zoom || HEATMAP_MIN_ZOOM, HEATMAP_MIN_ZOOM, HEATMAP_MAX_ZOOM);
                     runtime.panX = Number(preservedView.panX) || 0;
@@ -11709,10 +11915,21 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                     runtime.plottingEnabled = preservedView.plottingEnabled === true;
                     runtime.plotAxis = preservedView.plotAxis === "col" ? "col" : "row";
                     runtime.linkedPlotOpen = preservedView.linkedPlotOpen === true && runtime.selectedCell !== null;
+                    runtime.intensityEnabled = preservedView.intensityEnabled === true;
+                    runtime.intensityMin = toFiniteNumber(preservedView.intensityMin);
+                    runtime.intensityMax = toFiniteNumber(preservedView.intensityMax);
                 } else {
                     runtime.zoom = HEATMAP_MIN_ZOOM;
                     runtime.panX = 0;
                     runtime.panY = 0;
+                    if (!runtime.intensityEnabled) {
+                        runtime.intensityMin = min;
+                        runtime.intensityMax = max;
+                    }
+                }
+
+                if (!rebuildHeatmapBitmap()) {
+                    throw new Error("Failed to build heatmap canvas");
                 }
                 runtime.maxSizeClamped = response?.max_size_clamped === true;
                 runtime.effectiveMaxSize = Number(response?.effective_max_size) || requestedMaxSize;
@@ -11938,6 +12155,11 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             shell.dataset.heatmapDisplayDims = runtime.displayDims;
             shell.dataset.heatmapFixedIndices = runtime.fixedIndices;
             shell.dataset.heatmapSelectionKey = runtime.selectionKey;
+            if (!preserveViewState) {
+                runtime.intensityEnabled = false;
+                runtime.intensityMin = null;
+                runtime.intensityMax = null;
+            }
             runtime.hover = null;
             runtime.hoverDisplayRow = null;
             hideTooltip();
@@ -12151,6 +12373,143 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             persistViewState();
         }
 
+        function updateIntensityFromPoint(point) {
+            if (!runtime.intensityEnabled || !runtime.intensityDragHandle || !runtime.layout) {
+                return;
+            }
+            const { rawMin, rawMax } = getRawIntensityBounds();
+            const minGap = getIntensityMinimumGap(rawMin, rawMax);
+            const ratio = clamp((point.y - runtime.layout.colorBarY) / runtime.layout.chartHeight, 0, 1);
+            const nextValue = rawMax - ratio * (rawMax - rawMin);
+
+            if (runtime.intensityDragHandle === "max") {
+                const lowerBound = Number.isFinite(runtime.intensityMin) ? runtime.intensityMin + minGap : rawMin + minGap;
+                runtime.intensityMax = clamp(nextValue, lowerBound, rawMax);
+            } else {
+                const upperBound = Number.isFinite(runtime.intensityMax) ? runtime.intensityMax - minGap : rawMax - minGap;
+                runtime.intensityMin = clamp(nextValue, rawMin, upperBound);
+            }
+
+            rebuildHeatmapBitmap();
+            renderHeatmap();
+            persistViewState();
+        }
+
+        function stopIntensityDrag(event = null) {
+            if (!runtime.intensityDragHandle) {
+                return;
+            }
+            if (
+                event &&
+                Number.isFinite(runtime.intensityPointerId) &&
+                runtime.intensityPointerId !== event.pointerId
+            ) {
+                return;
+            }
+
+            const pointerId = runtime.intensityPointerId;
+            const dragTarget = runtime.intensityDragTarget;
+            runtime.intensityDragHandle = null;
+            runtime.intensityPointerId = null;
+            runtime.intensityDragTarget = null;
+
+            if (intensityMinHandle) {
+                intensityMinHandle.classList.remove("is-active");
+            }
+            if (intensityMaxHandle) {
+                intensityMaxHandle.classList.remove("is-active");
+            }
+            if (
+                dragTarget &&
+                Number.isFinite(pointerId) &&
+                typeof dragTarget.hasPointerCapture === "function" &&
+                dragTarget.hasPointerCapture(pointerId)
+            ) {
+                dragTarget.releasePointerCapture(pointerId);
+            }
+            persistViewState();
+        }
+
+        function onIntensityHandlePointerDown(event) {
+            if (!runtime.intensityEnabled) {
+                return;
+            }
+            const isMousePointer = !event.pointerType || event.pointerType === "mouse";
+            if (isMousePointer && event.button !== 0) {
+                return;
+            }
+
+            const handleKind =
+                event.currentTarget?.dataset?.heatmapIntensityHandle === "max" ? "max" : "min";
+            runtime.intensityDragHandle = handleKind;
+            runtime.intensityPointerId = event.pointerId;
+            runtime.intensityDragTarget = event.currentTarget;
+            event.preventDefault();
+            event.stopPropagation();
+            if (typeof event.currentTarget?.setPointerCapture === "function") {
+                event.currentTarget.setPointerCapture(event.pointerId);
+            }
+            event.currentTarget.classList.add("is-active");
+            updateIntensityFromPoint(getRelativePoint(event));
+        }
+
+        function onIntensityHandlePointerMove(event) {
+            if (
+                !runtime.intensityDragHandle ||
+                !Number.isFinite(runtime.intensityPointerId) ||
+                runtime.intensityPointerId !== event.pointerId
+            ) {
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            updateIntensityFromPoint(getRelativePoint(event));
+        }
+
+        function onIntensityHandleClick(event) {
+            if (!event) {
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+        }
+
+        function onToggleIntensity(event) {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            if (
+                runtime.rows <= 0 ||
+                runtime.cols <= 0 ||
+                !Number.isFinite(runtime.min) ||
+                !Number.isFinite(runtime.max) ||
+                !(runtime.max > runtime.min)
+            ) {
+                return;
+            }
+
+            runtime.intensityEnabled = !runtime.intensityEnabled;
+            stopIntensityDrag();
+            if (runtime.intensityEnabled) {
+                const { rawMin, rawMax } = getRawIntensityBounds();
+                runtime.intensityMin = rawMin;
+                runtime.intensityMax = rawMax;
+                setMatrixStatus(
+                    statusElement,
+                    "Intensity window enabled. Drag the top and bottom color-bar handles to adjust the visible range.",
+                    "info"
+                );
+            } else {
+                runtime.intensityMin = runtime.min;
+                runtime.intensityMax = runtime.max;
+                setMatrixStatus(statusElement, buildLoadedStatusText(runtime.loadedPhase), "info");
+            }
+            rebuildHeatmapBitmap();
+            renderHeatmap();
+            persistViewState();
+        }
+
         function onPlotToggleClick(event) {
             if (event) {
                 event.preventDefault();
@@ -12286,10 +12645,25 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         canvasHost.addEventListener("click", onCanvasClick);
         if (panToggleButton) panToggleButton.addEventListener("click", onTogglePan);
         if (plotToggleButton) plotToggleButton.addEventListener("click", onPlotToggleClick);
+        if (intensityToggleButton) intensityToggleButton.addEventListener("click", onToggleIntensity);
         if (zoomInButton) zoomInButton.addEventListener("click", onZoomIn);
         if (zoomOutButton) zoomOutButton.addEventListener("click", onZoomOut);
         if (resetButton) resetButton.addEventListener("click", onResetView);
         if (fullscreenButton) fullscreenButton.addEventListener("click", onFullscreenClick);
+        if (intensityMinHandle) {
+            intensityMinHandle.addEventListener("pointerdown", onIntensityHandlePointerDown);
+            intensityMinHandle.addEventListener("pointermove", onIntensityHandlePointerMove);
+            intensityMinHandle.addEventListener("pointerup", stopIntensityDrag);
+            intensityMinHandle.addEventListener("pointercancel", stopIntensityDrag);
+            intensityMinHandle.addEventListener("click", onIntensityHandleClick);
+        }
+        if (intensityMaxHandle) {
+            intensityMaxHandle.addEventListener("pointerdown", onIntensityHandlePointerDown);
+            intensityMaxHandle.addEventListener("pointermove", onIntensityHandlePointerMove);
+            intensityMaxHandle.addEventListener("pointerup", stopIntensityDrag);
+            intensityMaxHandle.addEventListener("pointercancel", stopIntensityDrag);
+            intensityMaxHandle.addEventListener("click", onIntensityHandleClick);
+        }
         if (linkedPlotRowButton) linkedPlotRowButton.addEventListener("click", onSelectRowAxis);
         if (linkedPlotColButton) linkedPlotColButton.addEventListener("click", onSelectColAxis);
         if (linkedPlotCloseButton) linkedPlotCloseButton.addEventListener("click", onCloseLinkedPlot);
@@ -12328,15 +12702,31 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             canvasHost.removeEventListener("click", onCanvasClick);
             if (panToggleButton) panToggleButton.removeEventListener("click", onTogglePan);
             if (plotToggleButton) plotToggleButton.removeEventListener("click", onPlotToggleClick);
+            if (intensityToggleButton) intensityToggleButton.removeEventListener("click", onToggleIntensity);
             if (zoomInButton) zoomInButton.removeEventListener("click", onZoomIn);
             if (zoomOutButton) zoomOutButton.removeEventListener("click", onZoomOut);
             if (resetButton) resetButton.removeEventListener("click", onResetView);
             if (fullscreenButton) fullscreenButton.removeEventListener("click", onFullscreenClick);
+            if (intensityMinHandle) {
+                intensityMinHandle.removeEventListener("pointerdown", onIntensityHandlePointerDown);
+                intensityMinHandle.removeEventListener("pointermove", onIntensityHandlePointerMove);
+                intensityMinHandle.removeEventListener("pointerup", stopIntensityDrag);
+                intensityMinHandle.removeEventListener("pointercancel", stopIntensityDrag);
+                intensityMinHandle.removeEventListener("click", onIntensityHandleClick);
+            }
+            if (intensityMaxHandle) {
+                intensityMaxHandle.removeEventListener("pointerdown", onIntensityHandlePointerDown);
+                intensityMaxHandle.removeEventListener("pointermove", onIntensityHandlePointerMove);
+                intensityMaxHandle.removeEventListener("pointerup", stopIntensityDrag);
+                intensityMaxHandle.removeEventListener("pointercancel", stopIntensityDrag);
+                intensityMaxHandle.removeEventListener("click", onIntensityHandleClick);
+            }
             if (linkedPlotRowButton) linkedPlotRowButton.removeEventListener("click", onSelectRowAxis);
             if (linkedPlotColButton) linkedPlotColButton.removeEventListener("click", onSelectColAxis);
             if (linkedPlotCloseButton) linkedPlotCloseButton.removeEventListener("click", onCloseLinkedPlot);
             shell.removeEventListener("click", onShellClick);
             document.removeEventListener("keydown", onFullscreenEsc);
+            stopIntensityDrag();
             if (runtime.fullscreenActive) {
                 rememberHeatmapFullscreen(runtime.selectionKey);
             }
