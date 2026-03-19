@@ -5699,20 +5699,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         });
     }
 
-    function resolveImageHistogramBinCount(min, max, valueCount, allIntegerLike = false) {
-        const safeCount = Math.max(0, Number(valueCount) || 0);
-        if (safeCount <= 1 || !(max > min)) {
-            return 1;
-        }
-        if (allIntegerLike && min >= 0 && max <= 255) {
-            return 256;
-        }
-        if (safeCount <= 512) {
-            return Math.max(24, Math.min(64, Math.round(Math.sqrt(safeCount) * 1.5)));
-        }
-        return 96;
-    }
-
     function estimateImageHistogramQuantile(histogram, quantile) {
         if (!histogram || !Array.isArray(histogram.bins) || histogram.count <= 0) {
             return null;
@@ -5753,7 +5739,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         let count = 0;
         let mean = 0;
         let m2 = 0;
-        let allIntegerLike = true;
 
         for (let index = 0; index < values.length; index += 1) {
             const numeric = Number(values[index]);
@@ -5764,10 +5749,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             count += 1;
             min = Math.min(min, numeric);
             max = Math.max(max, numeric);
-            if (allIntegerLike && Math.abs(numeric - Math.round(numeric)) > 1e-9) {
-                allIntegerLike = false;
-            }
-
             const delta = numeric - mean;
             mean += delta / count;
             m2 += delta * (numeric - mean);
@@ -5782,13 +5763,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         }
 
         const requestedBinCount = Math.round(Number(options.binCount) || 0);
-        const binCount = Math.max(
-            1,
-            Math.min(
-                256,
-                requestedBinCount || resolveImageHistogramBinCount(min, max, count, allIntegerLike)
-            )
-        );
+        const binCount = Math.max(1, Math.min(256, requestedBinCount || 256));
         const span = max - min;
         const binWidth = span / Math.max(1, binCount);
         const bins = Array.from({ length: binCount }, () => 0);
@@ -5832,120 +5807,161 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         return histogram;
     }
 
-    function renderImageHistogramEmptyMarkup(message) {
-        const text = message || "Histogram is unavailable for this image.";
+    function renderImageHistogramToolIcon(kind) {
+        if (kind === "pan") {
+            return `
+      <svg class="line-tool-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M8 1v14M1 8h14M8 1 6.3 2.7M8 1l1.7 1.7M8 15l-1.7-1.7M8 15l1.7-1.7M1 8l1.7-1.7M1 8l1.7 1.7M15 8l-1.7-1.7M15 8l-1.7 1.7"></path>
+      </svg>
+    `;
+        }
+        if (kind === "zoom-in") {
+            return `
+      <svg class="line-tool-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <circle cx="7" cy="7" r="4.5"></circle>
+        <path d="M10.4 10.4 14 14M7 5v4M5 7h4"></path>
+      </svg>
+    `;
+        }
+        if (kind === "zoom-out") {
+            return `
+      <svg class="line-tool-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <circle cx="7" cy="7" r="4.5"></circle>
+        <path d="M10.4 10.4 14 14M5 7h4"></path>
+      </svg>
+    `;
+        }
+        if (kind === "reset") {
+            return `
+      <svg class="line-tool-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M3.2 5.4A5 5 0 1 1 3 8M3 3v3h3"></path>
+      </svg>
+    `;
+        }
+        if (kind === "fullscreen") {
+            return `
+      <svg class="line-tool-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"></path>
+      </svg>
+    `;
+        }
+        return "";
+    }
+
+    function renderImageHistogramToolButton(label, dataAttr, kind) {
         return `
-    <div class="image-histogram-panel">
+    <button
+      type="button"
+      class="line-tool-btn line-tool-btn-icon"
+      ${dataAttr}="true"
+      aria-label="${label}"
+      title="${label}"
+    >
+      ${renderImageHistogramToolIcon(kind)}
+    </button>
+  `;
+    }
+
+    function createImageHistogramPayload(histogram, options = {}) {
+        const title = options.title || "Histogram";
+        const subtitle = options.subtitle || "Intensity distribution for the current image slice";
+        const ariaLabel = options.ariaLabel || "Image histogram";
+        const emptyMessage = options.emptyMessage || "Histogram is unavailable for this image.";
+        const normalizedHistogram =
+            histogram && Array.isArray(histogram.bins) && histogram.bins.length
+                ? {
+                    count: Math.max(0, Number(histogram.count) || 0),
+                    min: Number(histogram.min) || 0,
+                    max: Number(histogram.max) || 0,
+                    mean: Number(histogram.mean) || 0,
+                    median: Number(histogram.median) || 0,
+                    stdDev: Number(histogram.stdDev) || 0,
+                    peakValue: Number(histogram.peakValue) || 0,
+                    peakCount: Math.max(0, Number(histogram.peakCount) || 0),
+                    peakIndex: Math.max(0, Number(histogram.peakIndex) || 0),
+                    binCount: Math.max(1, Number(histogram.binCount) || histogram.bins.length || 1),
+                    binWidth: Number(histogram.binWidth) || 0,
+                    bins: histogram.bins.map((count) => Math.max(0, Number(count) || 0)),
+                }
+                : null;
+
+        return {
+            title,
+            subtitle,
+            ariaLabel,
+            emptyMessage,
+            histogram: normalizedHistogram,
+        };
+    }
+
+    function renderImageHistogramShellMarkup(payload) {
+        const safePayload = payload && typeof payload === "object" ? payload : createImageHistogramPayload(null);
+        const histogram = safePayload.histogram;
+        const title = safePayload.title || "Histogram";
+        const subtitle = safePayload.subtitle || "Intensity distribution for the current image slice";
+        const ariaLabel = safePayload.ariaLabel || "Image histogram";
+        const badgeText = histogram && histogram.binCount ? `${histogram.binCount} bins` : "-- bins";
+        const encodedPayload = escapeHtml(JSON.stringify(safePayload));
+        return `
+    <div
+      class="line-chart-shell image-histogram-shell"
+      data-image-histogram-shell="true"
+      data-image-histogram-payload="${encodedPayload}"
+    >
       <div class="image-histogram-header">
         <div>
-          <div class="image-histogram-title">Histogram</div>
-          <div class="image-histogram-subtitle">Intensity distribution for the current image slice</div>
+          <div class="image-histogram-title" data-image-histogram-title="true">${escapeHtml(title)}</div>
+          <div class="image-histogram-subtitle" data-image-histogram-subtitle="true">${escapeHtml(subtitle)}</div>
+        </div>
+        <span class="image-histogram-badge" data-image-histogram-badge="true">${escapeHtml(badgeText)}</span>
+      </div>
+      <div class="line-chart-toolbar image-histogram-toolbar">
+        <div class="line-tool-group">
+          <span class="line-zoom-label" data-image-histogram-zoom-label="true">100%</span>
+          ${renderImageHistogramToolButton("Fullscreen", "data-image-histogram-fullscreen-toggle", "fullscreen")}
+          <span class="line-zoom-label" data-image-histogram-range-label="true">Range: --</span>
         </div>
       </div>
-      <div class="image-histogram-empty">${escapeHtml(text)}</div>
+      <div class="line-chart-stage">
+        <div
+          class="line-chart-canvas image-histogram-canvas"
+          data-image-histogram-canvas="true"
+          tabindex="0"
+          role="application"
+          aria-label="${escapeHtml(ariaLabel)}"
+        >
+          <svg
+            class="image-histogram-svg"
+            data-image-histogram-svg="true"
+            viewBox="0 0 760 220"
+            role="img"
+            aria-label="${escapeHtml(ariaLabel)}"
+          ></svg>
+          <div class="line-hover image-histogram-hover" data-image-histogram-hover="true" hidden></div>
+        </div>
+      </div>
+      <div class="image-histogram-empty" data-image-histogram-empty="true" hidden></div>
+      <div class="image-histogram-stats">
+        <span data-image-histogram-stat-mean="true">mean: --</span>
+        <span data-image-histogram-stat-median="true">median: --</span>
+        <span data-image-histogram-stat-std="true">std: --</span>
+        <span data-image-histogram-stat-peak="true">peak: --</span>
+      </div>
     </div>
   `;
     }
 
-    function renderImageHistogramMarkup(histogram, options = {}) {
-        if (!histogram || !Array.isArray(histogram.bins) || !histogram.bins.length) {
-            return renderImageHistogramEmptyMarkup(options.emptyMessage || "Histogram is unavailable for this image.");
-        }
-
-        const title = options.title || "Histogram";
-        const subtitle = options.subtitle || "Intensity distribution for the current image slice";
-        const ariaLabel = options.ariaLabel || "Image histogram";
-        const width = Number.isFinite(Number(options.width)) ? Number(options.width) : 760;
-        const height = Number.isFinite(Number(options.height)) ? Number(options.height) : 190;
-        const paddingLeft = 42;
-        const paddingRight = 14;
-        const paddingTop = 16;
-        const paddingBottom = 30;
-        const chartWidth = Math.max(140, width - paddingLeft - paddingRight);
-        const chartHeight = Math.max(80, height - paddingTop - paddingBottom);
-        const baselineY = paddingTop + chartHeight;
-        const maxCount = Math.max(1, histogram.peakCount);
-        const midValue = histogram.min + (histogram.max - histogram.min) / 2;
-
-        const bars = histogram.bins
-            .map((count, index) => {
-                if (count <= 0) {
-                    return "";
-                }
-                const startX = paddingLeft + (index / histogram.binCount) * chartWidth;
-                const endX = paddingLeft + ((index + 1) / histogram.binCount) * chartWidth;
-                const barWidth = Math.max(1, endX - startX - 0.45);
-                const barHeight = (count / maxCount) * chartHeight;
-                const y = baselineY - barHeight;
-                const toneRatio = histogram.binCount <= 1 ? 0.5 : index / (histogram.binCount - 1);
-                const tone = Math.round(22 + toneRatio * 220);
-                return `
-            <rect
-              x="${startX.toFixed(3)}"
-              y="${y.toFixed(3)}"
-              width="${barWidth.toFixed(3)}"
-              height="${Math.max(0.85, barHeight).toFixed(3)}"
-              rx="1.2"
-              fill="rgb(${tone}, ${tone}, ${tone})"
-            ></rect>
-          `;
+    function renderImageHistogramEmptyMarkup(message, options = {}) {
+        return renderImageHistogramShellMarkup(
+            createImageHistogramPayload(null, {
+                ...options,
+                emptyMessage: message || options.emptyMessage || "Histogram is unavailable for this image.",
             })
-            .join("");
+        );
+    }
 
-        const peakLabel = histogram.peakCount > 0
-            ? formatHeatmapScaleValue(histogram.peakValue)
-            : "--";
-
-        return `
-    <div class="image-histogram-panel">
-      <div class="image-histogram-header">
-        <div>
-          <div class="image-histogram-title">${escapeHtml(title)}</div>
-          <div class="image-histogram-subtitle">${escapeHtml(subtitle)}</div>
-        </div>
-        <span class="image-histogram-badge">${histogram.binCount} bins</span>
-      </div>
-        <svg
-          class="image-histogram-svg"
-          viewBox="0 0 ${width} ${height}"
-          role="img"
-          aria-label="${escapeHtml(ariaLabel)}"
-      >
-        <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="12" fill="#F8FAFC" stroke="#D9E2F2"></rect>
-        <line x1="${paddingLeft}" y1="${paddingTop}" x2="${paddingLeft}" y2="${baselineY}" stroke="rgba(71,85,105,0.28)" stroke-width="1"></line>
-        <line x1="${paddingLeft}" y1="${baselineY}" x2="${paddingLeft + chartWidth}" y2="${baselineY}" stroke="rgba(71,85,105,0.28)" stroke-width="1"></line>
-        <line
-          x1="${paddingLeft}"
-          y1="${paddingTop + chartHeight / 2}"
-          x2="${paddingLeft + chartWidth}"
-          y2="${paddingTop + chartHeight / 2}"
-          stroke="rgba(148,163,184,0.18)"
-          stroke-dasharray="4 4"
-          stroke-width="1"
-        ></line>
-        ${bars}
-        <g class="line-axis-labels">
-          <text x="${paddingLeft - 6}" y="${paddingTop + 9}" text-anchor="end">${histogram.peakCount.toLocaleString()}</text>
-          <text x="${paddingLeft - 6}" y="${baselineY + 4}" text-anchor="end">0</text>
-          <text x="${paddingLeft}" y="${baselineY + 18}" text-anchor="start">${escapeHtml(
-            formatHeatmapScaleValue(histogram.min)
-        )}</text>
-          <text x="${paddingLeft + chartWidth / 2}" y="${baselineY + 18}" text-anchor="middle">${escapeHtml(
-            formatHeatmapScaleValue(midValue)
-        )}</text>
-          <text x="${paddingLeft + chartWidth}" y="${baselineY + 18}" text-anchor="end">${escapeHtml(
-            formatHeatmapScaleValue(histogram.max)
-        )}</text>
-        </g>
-      </svg>
-      <div class="image-histogram-stats">
-        <span>mean: ${escapeHtml(formatCell(histogram.mean))}</span>
-        <span>median: ${escapeHtml(formatCell(histogram.median))}</span>
-        <span>std: ${escapeHtml(formatCell(histogram.stdDev))}</span>
-        <span>peak: ${escapeHtml(peakLabel)}</span>
-      </div>
-    </div>
-  `;
+    function renderImageHistogramMarkup(histogram, options = {}) {
+        return renderImageHistogramShellMarkup(createImageHistogramPayload(histogram, options));
     }
 
     function renderHeatmapPreview(preview, options = {}) {
@@ -6398,6 +6414,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     }
     var moduleState = ensurePath(ns, "components.viewerPanel.render.sections");
 
+    // Feature flag: when true, the Heatmap tab renders the same histogram panel used by Image.
+    const SHOW_HEATMAP_HISTOGRAM = false;
+
     // Renders the correct SVG icon for a toolbar button based on its kind string
     function renderToolIcon(kind) {
         if (kind === "pan") {
@@ -6768,17 +6787,26 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
     function renderVirtualHeatmapShell(state, config, options = {}) {
         const isImageMode = (state.displayTab || "line") === "image";
-        const includeImageHistogram = options && options.includeImageHistogram === true;
+        const includeHistogram = options && options.includeHistogram === true;
         const resolvedColormap =
             isImageMode
                 ? "grayscale"
                 : state.heatmapColormap || "viridis";
+        const histogramPlaceholderMessage = isImageMode
+            ? "Histogram updates with the current image slice."
+            : "Histogram updates with the current heatmap slice.";
         const histogramPlaceholder =
             typeof global.renderImageHistogramEmptyMarkup === "function"
-                ? global.renderImageHistogramEmptyMarkup("Histogram updates with the current image slice.")
+                ? global.renderImageHistogramEmptyMarkup(histogramPlaceholderMessage, {
+                    title: "Histogram",
+                    subtitle: isImageMode
+                        ? "Displayed grayscale distribution for the current slice"
+                        : "Displayed value distribution for the current slice",
+                    ariaLabel: isImageMode ? "Image histogram" : "Heatmap histogram",
+                })
                 : `
         <div class="image-histogram-panel">
-          <div class="image-histogram-empty">Histogram updates with the current image slice.</div>
+          <div class="image-histogram-empty">${escapeHtml(histogramPlaceholderMessage)}</div>
         </div>
       `;
         return `
@@ -6837,7 +6865,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         </div>
         <div class="heatmap-linked-plot-shell-host" data-heatmap-linked-shell-host="true"></div>
       </div>
-      ${includeImageHistogram
+      ${includeHistogram
                 ? `
       <div data-image-histogram-root="true">
         ${histogramPlaceholder}
@@ -6873,10 +6901,14 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const statusClass = `data-status ${statusTone === "error" ? "error" : "info"}`;
 
         const content = isEnabled
-            ? renderVirtualHeatmapShell(state, config)
+            ? renderVirtualHeatmapShell(state, config, { includeHistogram: SHOW_HEATMAP_HISTOGRAM })
             : renderHeatmapPreview(preview, {
                 heatmapColormap: resolvedColormap,
                 heatmapGrid: state.heatmapGrid,
+                includeHistogram: SHOW_HEATMAP_HISTOGRAM,
+                histogramTitle: "Histogram",
+                histogramSubtitle: "Sampled value distribution for the preview slice",
+                histogramAriaLabel: "Preview heatmap histogram",
             });
 
         return `
@@ -6913,7 +6945,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const statusClass = `data-status ${statusTone === "error" ? "error" : "info"}`;
 
         const content = isEnabled
-            ? renderVirtualHeatmapShell(state, config, { includeImageHistogram: true })
+            ? renderVirtualHeatmapShell(state, config, { includeHistogram: true })
             : renderHeatmapPreview(preview, {
                 heatmapColormap: "grayscale",
                 heatmapGrid: state.heatmapGrid,
@@ -7200,6 +7232,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     const MATRIX_RUNTIME_CLEANUPS = new Set();
     const LINE_RUNTIME_CLEANUPS = new Set();
     const HEATMAP_RUNTIME_CLEANUPS = new Set();
+    const IMAGE_HISTOGRAM_RUNTIME_CLEANUPS = new Set();
 
     // Calls every registered cleanup closure and clears all three sets
     // Invoked before every full re-render to prevent stale event listeners accumulating on recycled DOM nodes
@@ -7230,6 +7263,15 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             }
         });
         HEATMAP_RUNTIME_CLEANUPS.clear();
+
+        IMAGE_HISTOGRAM_RUNTIME_CLEANUPS.forEach((cleanup) => {
+            try {
+                cleanup();
+            } catch (_error) {
+                // ignore cleanup errors for detached nodes
+            }
+        });
+        IMAGE_HISTOGRAM_RUNTIME_CLEANUPS.clear();
     }
 
     // Ensures a DOM pool stays at exactly `count` elements with className; creates or removes nodes as needed
@@ -7274,6 +7316,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     if (typeof HEATMAP_RUNTIME_CLEANUPS !== "undefined") {
         moduleState.HEATMAP_RUNTIME_CLEANUPS = HEATMAP_RUNTIME_CLEANUPS;
         global.HEATMAP_RUNTIME_CLEANUPS = HEATMAP_RUNTIME_CLEANUPS;
+    }
+    if (typeof IMAGE_HISTOGRAM_RUNTIME_CLEANUPS !== "undefined") {
+        moduleState.IMAGE_HISTOGRAM_RUNTIME_CLEANUPS = IMAGE_HISTOGRAM_RUNTIME_CLEANUPS;
+        global.IMAGE_HISTOGRAM_RUNTIME_CLEANUPS = IMAGE_HISTOGRAM_RUNTIME_CLEANUPS;
     }
     if (typeof clearViewerRuntimeBindings !== "undefined") {
         moduleState.clearViewerRuntimeBindings = clearViewerRuntimeBindings;
@@ -10456,6 +10502,8 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const fileKey = shell.dataset.heatmapFileKey || "";
         const fileEtag = shell.dataset.heatmapFileEtag || "";
         const path = shell.dataset.heatmapPath || "/";
+        const heatmapMode = shell.dataset.heatmapMode || "heatmap";
+        const isImageMode = heatmapMode === "image";
         const displayDims = shell.dataset.heatmapDisplayDims || "";
         const fixedIndices = shell.dataset.heatmapFixedIndices || "";
         const selectionKey =
@@ -10467,6 +10515,16 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const lineNotation = shell.dataset.heatmapLineNotation || "auto";
         const lineGrid = shell.dataset.heatmapLineGrid !== "0";
         const lineAspect = shell.dataset.heatmapLineAspect || "line";
+        const histogramAriaLabel = isImageMode ? "Image histogram" : "Heatmap histogram";
+        const histogramBaseSubtitle = isImageMode
+            ? "Intensity distribution for the current image slice"
+            : "Value distribution for the current heatmap slice";
+        const histogramPreviewSubtitle = isImageMode
+            ? "Preview grayscale distribution for the current slice"
+            : "Preview value distribution for the current slice";
+        const histogramHighResSubtitle = isImageMode
+            ? "Displayed grayscale distribution for the current slice"
+            : "Displayed value distribution for the current slice";
 
         if (!fileKey) {
             setMatrixStatus(statusElement, "No heatmap data available.", "error");
@@ -10588,19 +10646,51 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             }
         }
 
+        function getImageHistogramApi() {
+            if (!histogramRoot) {
+                return null;
+            }
+            const histogramShell = histogramRoot.querySelector("[data-image-histogram-shell]");
+            if (!histogramShell) {
+                return null;
+            }
+            if (
+                !histogramShell.__imageHistogramRuntimeApi &&
+                typeof initializeImageHistogramRuntime === "function"
+            ) {
+                initializeImageHistogramRuntime(histogramShell);
+            }
+            return histogramShell.__imageHistogramRuntimeApi || null;
+        }
+
         function setImageHistogramEmptyState(message) {
             if (!histogramRoot) {
                 return;
             }
-            if (typeof renderImageHistogramEmptyMarkup === "function") {
-                histogramRoot.innerHTML = renderImageHistogramEmptyMarkup(message);
+            const histogramApi = getImageHistogramApi();
+            if (histogramApi && typeof histogramApi.setMessage === "function") {
+                histogramApi.setMessage(message, {
+                    title: "Histogram",
+                    subtitle: histogramBaseSubtitle,
+                    ariaLabel: histogramAriaLabel,
+                });
                 return;
             }
-            histogramRoot.innerHTML = `
-      <div class="image-histogram-panel">
-        <div class="image-histogram-empty">${message || "Histogram is unavailable for this image."}</div>
-      </div>
-    `;
+            if (typeof renderImageHistogramEmptyMarkup === "function") {
+                histogramRoot.innerHTML = renderImageHistogramEmptyMarkup(message, {
+                    title: "Histogram",
+                    subtitle: histogramBaseSubtitle,
+                    ariaLabel: histogramAriaLabel,
+                });
+                const nextHistogramApi = getImageHistogramApi();
+                if (nextHistogramApi && typeof nextHistogramApi.setMessage === "function") {
+                    nextHistogramApi.setMessage(message, {
+                        title: "Histogram",
+                        subtitle: histogramBaseSubtitle,
+                        ariaLabel: histogramAriaLabel,
+                    });
+                }
+            }
         }
 
         function updateImageHistogram() {
@@ -10614,19 +10704,39 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 setImageHistogramEmptyState("Histogram is unavailable in this build.");
                 return;
             }
-            const histogram = buildImageHistogramData(runtime.values);
+            const histogram = buildImageHistogramData(runtime.values, { binCount: 256 });
             if (!histogram) {
                 setImageHistogramEmptyState("Histogram is unavailable for the current image slice.");
                 return;
             }
+            const histogramSubtitle =
+                runtime.loadedPhase === "highres"
+                    ? histogramHighResSubtitle
+                    : histogramPreviewSubtitle;
+            const histogramApi = getImageHistogramApi();
+            if (histogramApi && typeof histogramApi.updateData === "function") {
+                histogramApi.updateData(histogram, {
+                    title: "Histogram",
+                    subtitle: histogramSubtitle,
+                    ariaLabel: histogramAriaLabel,
+                    preserveViewState: true,
+                });
+                return;
+            }
             histogramRoot.innerHTML = renderImageHistogramMarkup(histogram, {
                 title: "Histogram",
-                subtitle:
-                    runtime.loadedPhase === "highres"
-                        ? "Displayed grayscale distribution for the current slice"
-                        : "Preview grayscale distribution for the current slice",
-                ariaLabel: "Image histogram",
+                subtitle: histogramSubtitle,
+                ariaLabel: histogramAriaLabel,
             });
+            const nextHistogramApi = getImageHistogramApi();
+            if (nextHistogramApi && typeof nextHistogramApi.updateData === "function") {
+                nextHistogramApi.updateData(histogram, {
+                    title: "Histogram",
+                    subtitle: histogramSubtitle,
+                    ariaLabel: histogramAriaLabel,
+                    preserveViewState: true,
+                });
+            }
         }
 
         function persistViewState() {
@@ -12212,6 +12322,917 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
 
 
+// Viewer HTML module: Implements interactive grayscale histogram runtime with 1D zoom/pan and fullscreen support.
+(function (global) {
+    "use strict";
+    var ns = global.HDFViewer;
+    if (!ns) {
+        console.error("[HDFViewer] Missing namespace for components/viewerPanel/runtime/imageHistogramRuntime.");
+        return;
+    }
+    var ensurePath = ns.core && ns.core.ensurePath;
+    if (typeof ensurePath !== "function") {
+        console.error("[HDFViewer] Missing core.ensurePath before loading components/viewerPanel/runtime/imageHistogramRuntime.");
+        return;
+    }
+    var moduleState = ensurePath(ns, "components.viewerPanel.runtime.imageHistogramRuntime");
+
+    const IMAGE_HISTOGRAM_VIEWBOX_WIDTH = 760;
+    const IMAGE_HISTOGRAM_VIEWBOX_HEIGHT = 220;
+    const IMAGE_HISTOGRAM_MIN_VISIBLE_BINS = 8;
+    const IMAGE_HISTOGRAM_MIN_SPAN_FRACTION = 1 / 32;
+    const IMAGE_HISTOGRAM_ZOOM_FACTOR = 1.2;
+    const IMAGE_HISTOGRAM_RUNTIME_CLEANUPS =
+        global.IMAGE_HISTOGRAM_RUNTIME_CLEANUPS instanceof Set
+            ? global.IMAGE_HISTOGRAM_RUNTIME_CLEANUPS
+            : new Set();
+
+    function clampHistogramValue(value, min, max) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+            return min;
+        }
+        return Math.min(max, Math.max(min, numeric));
+    }
+
+    function formatHistogramScaleValue(value) {
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) {
+            return "--";
+        }
+        if (Math.abs(numeric) >= 1e6 || (Math.abs(numeric) < 1e-3 && numeric !== 0)) {
+            return numeric.toExponential(2);
+        }
+        return numeric.toLocaleString(undefined, {
+            maximumFractionDigits: Math.abs(numeric) >= 10 ? 1 : 3,
+        });
+    }
+
+    function parseImageHistogramPayload(shell) {
+        if (!shell) {
+            return {};
+        }
+        const raw = shell.dataset.imageHistogramPayload || "";
+        if (!raw) {
+            return {};
+        }
+        try {
+            const parsed = JSON.parse(raw);
+            return parsed && typeof parsed === "object" ? parsed : {};
+        } catch (_error) {
+            return {};
+        }
+    }
+
+    function normalizeImageHistogram(histogram) {
+        if (!histogram || !Array.isArray(histogram.bins) || !histogram.bins.length) {
+            return null;
+        }
+        const bins = histogram.bins.map((count) => Math.max(0, Number(count) || 0));
+        const binCount = Math.max(1, Math.round(Number(histogram.binCount) || bins.length || 1));
+        const count = Math.max(0, Number(histogram.count) || bins.reduce((sum, value) => sum + value, 0));
+        const min = Number(histogram.min);
+        let max = Number(histogram.max);
+        const safeMin = Number.isFinite(min) ? min : 0;
+        if (!Number.isFinite(max) || !(max > safeMin)) {
+            max = safeMin + 1;
+        }
+        const binWidth = (max - safeMin) / Math.max(1, binCount);
+        const peakCount = Math.max(0, Number(histogram.peakCount) || Math.max(...bins, 0));
+        const peakValue = Number.isFinite(Number(histogram.peakValue))
+            ? Number(histogram.peakValue)
+            : safeMin + (Math.max(0, Number(histogram.peakIndex) || 0) + 0.5) * binWidth;
+
+        return {
+            count,
+            min: safeMin,
+            max,
+            mean: Number(histogram.mean) || 0,
+            median: Number(histogram.median) || 0,
+            stdDev: Number(histogram.stdDev) || 0,
+            peakValue,
+            peakCount,
+            binCount,
+            binWidth,
+            bins,
+        };
+    }
+
+    function initializeImageHistogramRuntime(shell) {
+        if (!shell || shell.dataset.imageHistogramBound === "true") {
+            return;
+        }
+
+        const canvasHost = shell.querySelector("[data-image-histogram-canvas]");
+        const svg = shell.querySelector("[data-image-histogram-svg]");
+        const hover = shell.querySelector("[data-image-histogram-hover]");
+        const emptyNode = shell.querySelector("[data-image-histogram-empty]");
+        const titleNode = shell.querySelector("[data-image-histogram-title]");
+        const subtitleNode = shell.querySelector("[data-image-histogram-subtitle]");
+        const badgeNode = shell.querySelector("[data-image-histogram-badge]");
+        const zoomLabel = shell.querySelector("[data-image-histogram-zoom-label]");
+        const rangeLabel = shell.querySelector("[data-image-histogram-range-label]");
+        const meanStat = shell.querySelector("[data-image-histogram-stat-mean]");
+        const medianStat = shell.querySelector("[data-image-histogram-stat-median]");
+        const stdStat = shell.querySelector("[data-image-histogram-stat-std]");
+        const peakStat = shell.querySelector("[data-image-histogram-stat-peak]");
+        const panToggleButton = shell.querySelector("[data-image-histogram-pan-toggle]");
+        const zoomInButton = shell.querySelector("[data-image-histogram-zoom-in]");
+        const zoomOutButton = shell.querySelector("[data-image-histogram-zoom-out]");
+        const resetButton = shell.querySelector("[data-image-histogram-reset-view]");
+        const fullscreenButton = shell.querySelector("[data-image-histogram-fullscreen-toggle]");
+
+        if (!canvasHost || !svg) {
+            return;
+        }
+
+        shell.dataset.imageHistogramBound = "true";
+
+        const runtime = {
+            histogram: null,
+            title: "Histogram",
+            subtitle: "Intensity distribution for the current image slice",
+            ariaLabel: "Image histogram",
+            emptyMessage: "Histogram is unavailable for this image.",
+            fullDomainMin: 0,
+            fullDomainMax: 1,
+            domainMin: 0,
+            domainMax: 1,
+            panEnabled: false,
+            isPanning: false,
+            panPointerId: null,
+            panStartX: 0,
+            panStartDomainMin: 0,
+            panStartDomainMax: 1,
+            fullscreenActive: false,
+            destroyed: false,
+        };
+        let controlScrollSnapshot = null;
+        let controlScrollSnapshotCapturedAt = 0;
+
+        function getFullDomainSpan() {
+            return Math.max(1e-9, runtime.fullDomainMax - runtime.fullDomainMin);
+        }
+
+        function getVisibleDomainSpan() {
+            return Math.max(1e-9, runtime.domainMax - runtime.domainMin);
+        }
+
+        function getMinimumVisibleSpan() {
+            if (!runtime.histogram) {
+                return 1;
+            }
+            const fullSpan = getFullDomainSpan();
+            const binLimitedSpan = runtime.histogram.binWidth * IMAGE_HISTOGRAM_MIN_VISIBLE_BINS;
+            return Math.max(fullSpan * IMAGE_HISTOGRAM_MIN_SPAN_FRACTION, binLimitedSpan);
+        }
+
+        function isToolbarControlTarget(event) {
+            if (!event?.target || typeof event.target.closest !== "function") {
+                return false;
+            }
+            const control = event.target.closest(
+                "[data-image-histogram-pan-toggle],[data-image-histogram-zoom-in],[data-image-histogram-zoom-out],[data-image-histogram-reset-view],[data-image-histogram-fullscreen-toggle]"
+            );
+            return Boolean(control && shell.contains(control));
+        }
+
+        function collectScrollableAncestors(node) {
+            if (typeof window === "undefined" || !node) {
+                return [];
+            }
+            const entries = [];
+            let current = node.parentElement;
+            while (current) {
+                const style = window.getComputedStyle(current);
+                const overflowY = (style.overflowY || "").toLowerCase();
+                const overflowX = (style.overflowX || "").toLowerCase();
+                const canScrollY =
+                    (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") &&
+                    current.scrollHeight > current.clientHeight + 1;
+                const canScrollX =
+                    (overflowX === "auto" || overflowX === "scroll" || overflowX === "overlay") &&
+                    current.scrollWidth > current.clientWidth + 1;
+                if (canScrollY || canScrollX) {
+                    entries.push({
+                        kind: "element",
+                        target: current,
+                        top: current.scrollTop,
+                        left: current.scrollLeft,
+                    });
+                }
+                current = current.parentElement;
+            }
+
+            const scrollingElement =
+                typeof document !== "undefined" && document.scrollingElement
+                    ? document.scrollingElement
+                    : null;
+            if (scrollingElement) {
+                entries.push({
+                    kind: "document",
+                    target: scrollingElement,
+                    top: scrollingElement.scrollTop,
+                    left: scrollingElement.scrollLeft,
+                });
+            }
+            return entries;
+        }
+
+        function restoreScrollableAncestors(snapshot) {
+            if (!Array.isArray(snapshot) || snapshot.length < 1) {
+                return;
+            }
+            snapshot.forEach((entry) => {
+                if (!entry || !entry.target) {
+                    return;
+                }
+                if (entry.kind === "document") {
+                    entry.target.scrollTop = entry.top;
+                    entry.target.scrollLeft = entry.left;
+                    return;
+                }
+                if (entry.kind === "element" && entry.target.isConnected) {
+                    entry.target.scrollTop = entry.top;
+                    entry.target.scrollLeft = entry.left;
+                }
+            });
+        }
+
+        function getActiveControlScrollSnapshot(maxAgeMs = 2200) {
+            if (!Array.isArray(controlScrollSnapshot) || controlScrollSnapshot.length < 1) {
+                return null;
+            }
+            const age = Date.now() - controlScrollSnapshotCapturedAt;
+            if (age > maxAgeMs) {
+                controlScrollSnapshot = null;
+                controlScrollSnapshotCapturedAt = 0;
+                return null;
+            }
+            return controlScrollSnapshot;
+        }
+
+        function scheduleControlScrollRestore(snapshot) {
+            if (!Array.isArray(snapshot) || snapshot.length < 1) {
+                return;
+            }
+            const runRestore = () => restoreScrollableAncestors(snapshot);
+            runRestore();
+            if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+                window.requestAnimationFrame(runRestore);
+            }
+            [0, 60, 140, 260, 420, 700].forEach((delay) => {
+                setTimeout(runRestore, delay);
+            });
+        }
+
+        function snapshotControlScroll(event) {
+            if (!isToolbarControlTarget(event)) {
+                return;
+            }
+            controlScrollSnapshot = collectScrollableAncestors(event.target);
+            controlScrollSnapshotCapturedAt = Date.now();
+        }
+
+        function restoreControlScroll(event) {
+            if (!isToolbarControlTarget(event)) {
+                return;
+            }
+            const snapshot =
+                getActiveControlScrollSnapshot() || collectScrollableAncestors(event.target);
+            scheduleControlScrollRestore(snapshot);
+        }
+
+        function clampDomain(domainMin, domainMax) {
+            const fullMin = runtime.fullDomainMin;
+            const fullMax = runtime.fullDomainMax;
+            const fullSpan = Math.max(1e-9, fullMax - fullMin);
+            const minVisibleSpan = Math.min(fullSpan, getMinimumVisibleSpan());
+            let nextMin = Number.isFinite(domainMin) ? domainMin : fullMin;
+            let nextMax = Number.isFinite(domainMax) ? domainMax : fullMax;
+            let nextSpan = nextMax - nextMin;
+
+            if (!(nextSpan > 0)) {
+                nextSpan = fullSpan;
+                nextMin = fullMin;
+                nextMax = fullMax;
+            }
+
+            if (nextSpan < minVisibleSpan) {
+                const center = nextMin + nextSpan / 2;
+                nextSpan = minVisibleSpan;
+                nextMin = center - nextSpan / 2;
+                nextMax = center + nextSpan / 2;
+            }
+
+            if (nextSpan >= fullSpan) {
+                return { min: fullMin, max: fullMax };
+            }
+
+            if (nextMin < fullMin) {
+                nextMin = fullMin;
+                nextMax = nextMin + nextSpan;
+            }
+            if (nextMax > fullMax) {
+                nextMax = fullMax;
+                nextMin = nextMax - nextSpan;
+            }
+
+            return {
+                min: clampHistogramValue(nextMin, fullMin, fullMax - minVisibleSpan),
+                max: clampHistogramValue(nextMax, fullMin + minVisibleSpan, fullMax),
+            };
+        }
+
+        function hideHover() {
+            if (hover) {
+                hover.hidden = true;
+            }
+        }
+
+        function syncHeader() {
+            if (titleNode) {
+                titleNode.textContent = runtime.title;
+            }
+            if (subtitleNode) {
+                subtitleNode.textContent = runtime.subtitle;
+            }
+            if (badgeNode) {
+                badgeNode.textContent =
+                    runtime.histogram && runtime.histogram.binCount
+                        ? `${runtime.histogram.binCount} bins`
+                        : "-- bins";
+            }
+            canvasHost.setAttribute("aria-label", runtime.ariaLabel);
+            svg.setAttribute("aria-label", runtime.ariaLabel);
+        }
+
+        function syncStats() {
+            if (!runtime.histogram) {
+                if (meanStat) meanStat.textContent = "mean: --";
+                if (medianStat) medianStat.textContent = "median: --";
+                if (stdStat) stdStat.textContent = "std: --";
+                if (peakStat) peakStat.textContent = "peak: --";
+                return;
+            }
+
+            if (meanStat) meanStat.textContent = `mean: ${formatCell(runtime.histogram.mean)}`;
+            if (medianStat) medianStat.textContent = `median: ${formatCell(runtime.histogram.median)}`;
+            if (stdStat) stdStat.textContent = `std: ${formatCell(runtime.histogram.stdDev)}`;
+            if (peakStat) peakStat.textContent = `peak: ${formatCell(runtime.histogram.peakValue)}`;
+        }
+
+        function syncControls() {
+            canvasHost.classList.toggle("is-pan", runtime.panEnabled);
+            canvasHost.classList.toggle("is-grabbing", runtime.isPanning);
+            canvasHost.style.cursor = runtime.isPanning ? "grabbing" : runtime.panEnabled ? "grab" : "crosshair";
+
+            if (panToggleButton) {
+                panToggleButton.classList.toggle("active", runtime.panEnabled);
+                panToggleButton.setAttribute("aria-label", runtime.panEnabled ? "Disable pan" : "Hand");
+                panToggleButton.setAttribute("title", runtime.panEnabled ? "Disable pan" : "Hand");
+            }
+            if (fullscreenButton) {
+                const label = runtime.fullscreenActive ? "Exit fullscreen" : "Fullscreen";
+                fullscreenButton.classList.toggle("active", runtime.fullscreenActive);
+                fullscreenButton.setAttribute("aria-label", label);
+                fullscreenButton.setAttribute("title", label);
+            }
+
+            if (!runtime.histogram) {
+                if (zoomLabel) zoomLabel.textContent = "100%";
+                if (rangeLabel) rangeLabel.textContent = "Range: --";
+                return;
+            }
+
+            const fullSpan = getFullDomainSpan();
+            const visibleSpan = getVisibleDomainSpan();
+            const zoomPercent = Math.max(100, Math.round((fullSpan / visibleSpan) * 100));
+            if (zoomLabel) {
+                zoomLabel.textContent = `${zoomPercent}%`;
+            }
+            if (rangeLabel) {
+                rangeLabel.textContent = `Range: ${formatHistogramScaleValue(runtime.domainMin)} to ${formatHistogramScaleValue(runtime.domainMax)}`;
+            }
+        }
+
+        function resetDomain(options = {}) {
+            runtime.domainMin = runtime.fullDomainMin;
+            runtime.domainMax = runtime.fullDomainMax;
+            if (options.disablePan !== false) {
+                runtime.panEnabled = false;
+            }
+        }
+
+        function setEmptyMessage(message) {
+            if (emptyNode) {
+                emptyNode.textContent = message || runtime.emptyMessage;
+                emptyNode.hidden = false;
+            }
+            hideHover();
+        }
+
+        function clearEmptyMessage() {
+            if (emptyNode) {
+                emptyNode.hidden = true;
+                emptyNode.textContent = "";
+            }
+        }
+
+        function render() {
+            const width = IMAGE_HISTOGRAM_VIEWBOX_WIDTH;
+            const height = IMAGE_HISTOGRAM_VIEWBOX_HEIGHT;
+            const paddingLeft = 46;
+            const paddingRight = 16;
+            const paddingTop = 14;
+            const paddingBottom = 34;
+            const chartWidth = Math.max(140, width - paddingLeft - paddingRight);
+            const chartHeight = Math.max(80, height - paddingTop - paddingBottom);
+            const baselineY = paddingTop + chartHeight;
+            svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+            if (!runtime.histogram) {
+                svg.innerHTML = `
+        <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="12" fill="#F8FAFC" stroke="#D9E2F2"></rect>
+      `;
+                syncControls();
+                syncStats();
+                return;
+            }
+
+            clearEmptyMessage();
+            const domainSpan = getVisibleDomainSpan();
+            const fullSpan = getFullDomainSpan();
+            const visibleBins = [];
+            let visiblePeakCount = 0;
+            for (let index = 0; index < runtime.histogram.binCount; index += 1) {
+                const count = runtime.histogram.bins[index] || 0;
+                const binStart = runtime.histogram.min + index * runtime.histogram.binWidth;
+                const binEnd =
+                    index === runtime.histogram.binCount - 1
+                        ? runtime.histogram.max
+                        : binStart + runtime.histogram.binWidth;
+                if (binEnd < runtime.domainMin || binStart > runtime.domainMax) {
+                    continue;
+                }
+                visibleBins.push({ index, count, start: binStart, end: binEnd });
+                visiblePeakCount = Math.max(visiblePeakCount, count);
+            }
+            visiblePeakCount = Math.max(1, visiblePeakCount);
+            const midValue = runtime.domainMin + domainSpan / 2;
+
+            const bars = visibleBins
+                .map((bin) => {
+                    if (bin.count <= 0) {
+                        return "";
+                    }
+                    const x1 = paddingLeft + ((Math.max(bin.start, runtime.domainMin) - runtime.domainMin) / domainSpan) * chartWidth;
+                    const x2 = paddingLeft + ((Math.min(bin.end, runtime.domainMax) - runtime.domainMin) / domainSpan) * chartWidth;
+                    const barWidth = Math.max(0.9, x2 - x1 - 0.35);
+                    const barHeight = (bin.count / visiblePeakCount) * chartHeight;
+                    const y = baselineY - barHeight;
+                    const toneRatio = fullSpan <= 0 ? 0.5 : ((bin.start + bin.end) * 0.5 - runtime.histogram.min) / fullSpan;
+                    const tone = Math.round(22 + clampHistogramValue(toneRatio, 0, 1) * 220);
+                    return `
+          <rect
+            x="${x1.toFixed(3)}"
+            y="${y.toFixed(3)}"
+            width="${barWidth.toFixed(3)}"
+            height="${Math.max(1, barHeight).toFixed(3)}"
+            rx="1.2"
+            fill="rgb(${tone}, ${tone}, ${tone})"
+          ></rect>
+        `;
+                })
+                .join("");
+
+            svg.innerHTML = `
+        <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="12" fill="#F8FAFC" stroke="#D9E2F2"></rect>
+        <line x1="${paddingLeft}" y1="${paddingTop}" x2="${paddingLeft}" y2="${baselineY}" stroke="rgba(71,85,105,0.28)" stroke-width="1"></line>
+        <line x1="${paddingLeft}" y1="${baselineY}" x2="${paddingLeft + chartWidth}" y2="${baselineY}" stroke="rgba(71,85,105,0.28)" stroke-width="1"></line>
+        <line
+          x1="${paddingLeft}"
+          y1="${paddingTop + chartHeight / 2}"
+          x2="${paddingLeft + chartWidth}"
+          y2="${paddingTop + chartHeight / 2}"
+          stroke="rgba(148,163,184,0.18)"
+          stroke-dasharray="4 4"
+          stroke-width="1"
+        ></line>
+        ${bars}
+        <g class="line-axis-labels">
+          <text x="${paddingLeft - 6}" y="${paddingTop + 9}" text-anchor="end">${visiblePeakCount.toLocaleString()}</text>
+          <text x="${paddingLeft - 6}" y="${baselineY + 4}" text-anchor="end">0</text>
+          <text x="${paddingLeft}" y="${baselineY + 18}" text-anchor="start">${escapeHtml(
+                formatHistogramScaleValue(runtime.domainMin)
+            )}</text>
+          <text x="${paddingLeft + chartWidth / 2}" y="${baselineY + 18}" text-anchor="middle">${escapeHtml(
+                formatHistogramScaleValue(midValue)
+            )}</text>
+          <text x="${paddingLeft + chartWidth}" y="${baselineY + 18}" text-anchor="end">${escapeHtml(
+                formatHistogramScaleValue(runtime.domainMax)
+            )}</text>
+        </g>
+      `;
+
+            syncControls();
+            syncStats();
+        }
+
+        function setPayload(payload, options = {}) {
+            const safePayload = payload && typeof payload === "object" ? payload : {};
+            const nextHistogram = normalizeImageHistogram(safePayload.histogram);
+            const previousFullMin = runtime.fullDomainMin;
+            const previousFullMax = runtime.fullDomainMax;
+            const previousDomainMin = runtime.domainMin;
+            const previousDomainMax = runtime.domainMax;
+            const preserveViewState = options.preserveViewState === true && runtime.histogram && nextHistogram;
+
+            runtime.title = String(safePayload.title || options.title || runtime.title || "Histogram");
+            runtime.subtitle = String(
+                safePayload.subtitle || options.subtitle || runtime.subtitle || "Intensity distribution for the current image slice"
+            );
+            runtime.ariaLabel = String(safePayload.ariaLabel || options.ariaLabel || runtime.ariaLabel || "Image histogram");
+            runtime.emptyMessage = String(
+                safePayload.emptyMessage || options.emptyMessage || runtime.emptyMessage || "Histogram is unavailable for this image."
+            );
+            runtime.histogram = nextHistogram;
+
+            if (runtime.histogram) {
+                runtime.fullDomainMin = runtime.histogram.min;
+                runtime.fullDomainMax = runtime.histogram.max;
+                if (preserveViewState) {
+                    const previousSpan = Math.max(1e-9, previousFullMax - previousFullMin);
+                    const nextSpan = getFullDomainSpan();
+                    const startRatio = clampHistogramValue((previousDomainMin - previousFullMin) / previousSpan, 0, 1);
+                    const endRatio = clampHistogramValue((previousDomainMax - previousFullMin) / previousSpan, 0, 1);
+                    const clamped = clampDomain(
+                        runtime.fullDomainMin + startRatio * nextSpan,
+                        runtime.fullDomainMin + endRatio * nextSpan
+                    );
+                    runtime.domainMin = clamped.min;
+                    runtime.domainMax = clamped.max;
+                } else {
+                    resetDomain({ disablePan: false });
+                }
+            } else {
+                runtime.fullDomainMin = 0;
+                runtime.fullDomainMax = 1;
+                runtime.domainMin = 0;
+                runtime.domainMax = 1;
+            }
+
+            shell.dataset.imageHistogramPayload = JSON.stringify({
+                title: runtime.title,
+                subtitle: runtime.subtitle,
+                ariaLabel: runtime.ariaLabel,
+                emptyMessage: runtime.emptyMessage,
+                histogram: runtime.histogram,
+            });
+
+            syncHeader();
+            if (!runtime.histogram) {
+                setEmptyMessage(runtime.emptyMessage);
+            }
+            render();
+        }
+
+        function resolveHoveredBin(point) {
+            if (!runtime.histogram) {
+                return null;
+            }
+            const rect = canvasHost.getBoundingClientRect();
+            const paddingLeftRatio = 46 / IMAGE_HISTOGRAM_VIEWBOX_WIDTH;
+            const paddingRightRatio = 16 / IMAGE_HISTOGRAM_VIEWBOX_WIDTH;
+            const paddingTopRatio = 14 / IMAGE_HISTOGRAM_VIEWBOX_HEIGHT;
+            const paddingBottomRatio = 34 / IMAGE_HISTOGRAM_VIEWBOX_HEIGHT;
+            const chartLeft = rect.width * paddingLeftRatio;
+            const chartRight = rect.width * (1 - paddingRightRatio);
+            const chartTop = rect.height * paddingTopRatio;
+            const chartBottom = rect.height * (1 - paddingBottomRatio);
+            if (
+                point.x < chartLeft ||
+                point.x > chartRight ||
+                point.y < chartTop ||
+                point.y > chartBottom
+            ) {
+                return null;
+            }
+
+            const ratio = clampHistogramValue((point.x - chartLeft) / Math.max(1, chartRight - chartLeft), 0, 1);
+            const value = runtime.domainMin + ratio * getVisibleDomainSpan();
+            const fullSpan = getFullDomainSpan();
+            const binIndex = clampHistogramValue(
+                Math.floor(((value - runtime.histogram.min) / fullSpan) * runtime.histogram.binCount),
+                0,
+                runtime.histogram.binCount - 1
+            );
+            const start = runtime.histogram.min + binIndex * runtime.histogram.binWidth;
+            const end =
+                binIndex === runtime.histogram.binCount - 1
+                    ? runtime.histogram.max
+                    : start + runtime.histogram.binWidth;
+            return {
+                index: binIndex,
+                start,
+                end,
+                count: runtime.histogram.bins[binIndex] || 0,
+            };
+        }
+
+        function updateHover(point) {
+            const hoveredBin = resolveHoveredBin(point);
+            if (!hoveredBin) {
+                hideHover();
+                return;
+            }
+            if (hover) {
+                const rect = canvasHost.getBoundingClientRect();
+                hover.style.left = `${clampHistogramValue(point.x + 12, 8, Math.max(8, rect.width - 170))}px`;
+                hover.style.top = `${clampHistogramValue(point.y + 12, 8, Math.max(8, rect.height - 80))}px`;
+                hover.hidden = false;
+                hover.innerHTML = `
+        <div>Bin: ${hoveredBin.index}</div>
+        <div>Range: ${formatHistogramScaleValue(hoveredBin.start)} to ${formatHistogramScaleValue(hoveredBin.end)}</div>
+        <div>Count: ${hoveredBin.count.toLocaleString()}</div>
+      `;
+            }
+        }
+
+        function getRelativePoint(event) {
+            const rect = canvasHost.getBoundingClientRect();
+            return {
+                x: event.clientX - rect.left,
+                y: event.clientY - rect.top,
+            };
+        }
+
+        function applyDomainZoom(factor, anchorRatio = 0.5) {
+            if (!runtime.histogram) {
+                return;
+            }
+            const currentSpan = getVisibleDomainSpan();
+            const nextSpan = currentSpan / Math.max(0.01, factor);
+            const safeAnchorRatio = clampHistogramValue(anchorRatio, 0, 1);
+            const anchor = runtime.domainMin + safeAnchorRatio * currentSpan;
+            const nextMin = anchor - safeAnchorRatio * nextSpan;
+            const nextMax = nextMin + nextSpan;
+            const clamped = clampDomain(nextMin, nextMax);
+            runtime.domainMin = clamped.min;
+            runtime.domainMax = clamped.max;
+            hideHover();
+            render();
+        }
+
+        function onWheel(event) {
+            if (!runtime.histogram) {
+                return;
+            }
+            event.preventDefault();
+            const point = getRelativePoint(event);
+            const rect = canvasHost.getBoundingClientRect();
+            const anchorRatio = clampHistogramValue(point.x / Math.max(1, rect.width), 0, 1);
+            const factor = event.deltaY < 0 ? IMAGE_HISTOGRAM_ZOOM_FACTOR : 1 / IMAGE_HISTOGRAM_ZOOM_FACTOR;
+            applyDomainZoom(factor, anchorRatio);
+        }
+
+        function onPointerDown(event) {
+            const isMousePointer = !event.pointerType || event.pointerType === "mouse";
+            if (isMousePointer && event.button !== 0) {
+                return;
+            }
+            if (!runtime.panEnabled || !runtime.histogram) {
+                return;
+            }
+            event.preventDefault();
+            const point = getRelativePoint(event);
+            runtime.isPanning = true;
+            runtime.panPointerId = event.pointerId;
+            runtime.panStartX = point.x;
+            runtime.panStartDomainMin = runtime.domainMin;
+            runtime.panStartDomainMax = runtime.domainMax;
+            canvasHost.setPointerCapture(event.pointerId);
+            syncControls();
+        }
+
+        function stopPan(event = null) {
+            if (!runtime.isPanning) {
+                return;
+            }
+            if (event && runtime.panPointerId !== event.pointerId) {
+                return;
+            }
+            const activePointerId = runtime.panPointerId;
+            runtime.isPanning = false;
+            runtime.panPointerId = null;
+            if (Number.isFinite(activePointerId) && canvasHost.hasPointerCapture(activePointerId)) {
+                canvasHost.releasePointerCapture(activePointerId);
+            }
+            syncControls();
+        }
+
+        function onPointerMove(event) {
+            const point = getRelativePoint(event);
+            if (runtime.isPanning && runtime.panPointerId === event.pointerId && runtime.histogram) {
+                event.preventDefault();
+                const rect = canvasHost.getBoundingClientRect();
+                const deltaRatio = (point.x - runtime.panStartX) / Math.max(1, rect.width);
+                const panSpan = runtime.panStartDomainMax - runtime.panStartDomainMin;
+                const deltaDomain = deltaRatio * panSpan;
+                const clamped = clampDomain(
+                    runtime.panStartDomainMin - deltaDomain,
+                    runtime.panStartDomainMax - deltaDomain
+                );
+                runtime.domainMin = clamped.min;
+                runtime.domainMax = clamped.max;
+                hideHover();
+                render();
+                return;
+            }
+            updateHover(point);
+        }
+
+        function onPointerUp(event) {
+            stopPan(event);
+            updateHover(getRelativePoint(event));
+        }
+
+        function onPointerLeave() {
+            if (runtime.isPanning) {
+                stopPan();
+            }
+            hideHover();
+        }
+
+        function onTogglePan() {
+            runtime.panEnabled = !runtime.panEnabled;
+            if (!runtime.panEnabled && runtime.isPanning) {
+                stopPan();
+            }
+            syncControls();
+        }
+
+        function onZoomIn() {
+            applyDomainZoom(IMAGE_HISTOGRAM_ZOOM_FACTOR, 0.5);
+        }
+
+        function onZoomOut() {
+            applyDomainZoom(1 / IMAGE_HISTOGRAM_ZOOM_FACTOR, 0.5);
+        }
+
+        function onReset() {
+            resetDomain();
+            hideHover();
+            render();
+        }
+
+        function syncFullscreenState() {
+            shell.classList.toggle("is-fullscreen", runtime.fullscreenActive);
+            syncControls();
+        }
+
+        function onToggleFullscreen(event) {
+            if (event) {
+                event.preventDefault();
+            }
+            runtime.fullscreenActive = !runtime.fullscreenActive;
+            syncFullscreenState();
+        }
+
+        function onFullscreenEsc(event) {
+            if (event.key === "Escape" && runtime.fullscreenActive) {
+                event.preventDefault();
+                event.stopPropagation();
+                runtime.fullscreenActive = false;
+                syncFullscreenState();
+            }
+        }
+
+        const onFullscreenButtonClick = (event) => {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+            }
+            onToggleFullscreen();
+        };
+
+        shell.__imageHistogramRuntimeApi = {
+            updateData(histogram, options = {}) {
+                setPayload({
+                    title: options.title || runtime.title,
+                    subtitle: options.subtitle || runtime.subtitle,
+                    ariaLabel: options.ariaLabel || runtime.ariaLabel,
+                    emptyMessage: options.emptyMessage || runtime.emptyMessage,
+                    histogram,
+                }, options);
+            },
+            setMessage(message, options = {}) {
+                setPayload({
+                    title: options.title || runtime.title,
+                    subtitle: options.subtitle || runtime.subtitle,
+                    ariaLabel: options.ariaLabel || runtime.ariaLabel,
+                    emptyMessage: message || options.emptyMessage || runtime.emptyMessage,
+                    histogram: null,
+                }, options);
+            },
+            togglePan() {
+                onTogglePan();
+            },
+            zoomIn() {
+                onZoomIn();
+            },
+            zoomOut() {
+                onZoomOut();
+            },
+            resetView() {
+                onReset();
+            },
+            toggleFullscreen() {
+                onToggleFullscreen();
+            },
+        };
+
+        canvasHost.addEventListener("wheel", onWheel, { passive: false });
+        canvasHost.addEventListener("pointerdown", onPointerDown);
+        canvasHost.addEventListener("pointermove", onPointerMove);
+        canvasHost.addEventListener("pointerup", onPointerUp);
+        canvasHost.addEventListener("pointercancel", stopPan);
+        canvasHost.addEventListener("pointerleave", onPointerLeave);
+        if (panToggleButton) {
+            panToggleButton.addEventListener("click", onTogglePan);
+        }
+        if (zoomInButton) {
+            zoomInButton.addEventListener("click", onZoomIn);
+        }
+        if (zoomOutButton) {
+            zoomOutButton.addEventListener("click", onZoomOut);
+        }
+        if (resetButton) {
+            resetButton.addEventListener("click", onReset);
+        }
+        if (fullscreenButton) {
+            fullscreenButton.addEventListener("click", onFullscreenButtonClick);
+        }
+        shell.addEventListener("pointerdown", snapshotControlScroll, true);
+        shell.addEventListener("click", restoreControlScroll, true);
+        document.addEventListener("keydown", onFullscreenEsc);
+
+        setPayload(parseImageHistogramPayload(shell));
+
+        const cleanup = () => {
+            if (runtime.destroyed) {
+                return;
+            }
+            runtime.destroyed = true;
+            hideHover();
+            stopPan();
+            canvasHost.removeEventListener("wheel", onWheel);
+            canvasHost.removeEventListener("pointerdown", onPointerDown);
+            canvasHost.removeEventListener("pointermove", onPointerMove);
+            canvasHost.removeEventListener("pointerup", onPointerUp);
+            canvasHost.removeEventListener("pointercancel", stopPan);
+            canvasHost.removeEventListener("pointerleave", onPointerLeave);
+            if (panToggleButton) {
+                panToggleButton.removeEventListener("click", onTogglePan);
+            }
+            if (zoomInButton) {
+                zoomInButton.removeEventListener("click", onZoomIn);
+            }
+            if (zoomOutButton) {
+                zoomOutButton.removeEventListener("click", onZoomOut);
+            }
+            if (resetButton) {
+                resetButton.removeEventListener("click", onReset);
+            }
+            if (fullscreenButton) {
+                fullscreenButton.removeEventListener("click", onFullscreenButtonClick);
+            }
+            shell.removeEventListener("pointerdown", snapshotControlScroll, true);
+            shell.removeEventListener("click", restoreControlScroll, true);
+            document.removeEventListener("keydown", onFullscreenEsc);
+            if (shell.__imageHistogramRuntimeApi) {
+                delete shell.__imageHistogramRuntimeApi;
+            }
+            shell.classList.remove("is-fullscreen");
+            canvasHost.style.cursor = "";
+            delete shell.dataset.imageHistogramBound;
+        };
+
+        IMAGE_HISTOGRAM_RUNTIME_CLEANUPS.add(cleanup);
+        return cleanup;
+    }
+
+    if (typeof initializeImageHistogramRuntime !== "undefined") {
+        moduleState.initializeImageHistogramRuntime = initializeImageHistogramRuntime;
+        global.initializeImageHistogramRuntime = initializeImageHistogramRuntime;
+    }
+    if (ns.core && typeof ns.core.registerModule === "function") {
+        ns.core.registerModule("components/viewerPanel/runtime/imageHistogramRuntime");
+    }
+})(typeof window !== "undefined" ? window : globalThis);
+
+
 // Viewer HTML module: Delegates panel interaction events and initializes per-shell matrix, line, and heatmap runtimes.
 (function (global) {
     "use strict";
@@ -12479,6 +13500,12 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         root.querySelectorAll("[data-line-shell]").forEach(function (shell) {
             if (typeof initializeLineRuntime === "function") {
                 initializeLineRuntime(shell);
+            }
+        });
+
+        root.querySelectorAll("[data-image-histogram-shell]").forEach(function (shell) {
+            if (typeof initializeImageHistogramRuntime === "function") {
+                initializeImageHistogramRuntime(shell);
             }
         });
 

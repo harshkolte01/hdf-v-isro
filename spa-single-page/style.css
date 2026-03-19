@@ -2590,12 +2590,22 @@ body.line-panel-fullscreen-active {
 }
 
 /* Image Histogram */
-.image-histogram-panel {
-    border-top: 1px solid var(--border);
-    padding-top: var(--spacing-sm);
-    display: grid;
-    gap: var(--spacing-sm);
+.image-histogram-shell {
     min-width: 0;
+}
+
+.image-histogram-shell.is-fullscreen {
+    z-index: 1510;
+}
+
+.image-histogram-shell.is-fullscreen>.line-chart-stage {
+    flex: 1;
+    min-height: 0;
+}
+
+.image-histogram-shell.is-fullscreen>.line-chart-stage>.image-histogram-canvas {
+    height: 100%;
+    min-height: 0;
 }
 
 .image-histogram-header {
@@ -2634,10 +2644,33 @@ body.line-panel-fullscreen-active {
     text-transform: uppercase;
 }
 
-.image-histogram-svg {
+.image-histogram-toolbar {
+    align-items: center;
+}
+
+.image-histogram-canvas {
+    height: clamp(180px, 28vh, 220px);
+    cursor: crosshair;
+}
+
+.image-histogram-canvas>svg[data-image-histogram-svg] {
+    position: absolute;
+    inset: 0;
     width: 100%;
-    height: auto;
+    height: 100%;
     display: block;
+}
+
+.image-histogram-canvas.is-pan {
+    cursor: grab;
+}
+
+.image-histogram-canvas.is-grabbing {
+    cursor: grabbing;
+}
+
+.image-histogram-svg {
+    pointer-events: none;
 }
 
 .image-histogram-stats {
@@ -2656,6 +2689,10 @@ body.line-panel-fullscreen-active {
     padding: 0.75rem 0.85rem;
     font-size: 0.74rem;
     line-height: 1.45;
+}
+
+.image-histogram-empty[hidden] {
+    display: none !important;
 }
 
 /* Heatmap Static Preview */
