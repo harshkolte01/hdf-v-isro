@@ -2000,7 +2000,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         previewRequestInFlight: false,
 
         // --- Display mode sub-tab ---
-        displayTab: "line",               // active tab: 'line', 'heatmap', or 'matrix'
+        displayTab: "line",               // active tab: 'line', 'image', 'heatmap', or 'matrix'
 
         // --- Per-view display preferences ---
         notation: "auto",                 // numeric notation for matrix cells: 'auto', 'fixed', or 'sci'
@@ -3058,14 +3058,27 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             },
 
             setDisplayTab(tab) {
-                const nextTab = ["table", "line", "heatmap"].includes(tab) ? tab : "line";
+                const nextTab = ["table", "line", "image", "heatmap"].includes(tab) ? tab : "line";
                 const snapshot = getState();
                 const tabChanged = snapshot.displayTab !== nextTab;
+                const nextTabIsHeatmapLike = nextTab === "heatmap" || nextTab === "image";
+                const currentPreviewMode =
+                    snapshot.displayTab === "line"
+                        ? "line"
+                        : snapshot.displayTab === "heatmap" || snapshot.displayTab === "image"
+                            ? "heatmap"
+                            : "table";
+                const nextPreviewMode =
+                    nextTab === "line"
+                        ? "line"
+                        : nextTabIsHeatmapLike
+                            ? "heatmap"
+                            : "table";
                 setState({
                     displayTab: nextTab,
                     ...(nextTab !== "table" ? { matrixFullEnabled: false } : {}),
                     ...(nextTab !== "line" ? { lineFullEnabled: false } : {}),
-                    ...(nextTab !== "heatmap" ? { heatmapFullEnabled: false } : {}),
+                    ...(!nextTabIsHeatmapLike ? { heatmapFullEnabled: false } : {}),
                 });
 
                 if (!tabChanged) {
@@ -3078,7 +3091,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                     snapshot.selectedNodeType === "dataset" &&
                     snapshot.selectedPath !== "/";
 
-                if (shouldReloadPreview) {
+                if (shouldReloadPreview && currentPreviewMode !== nextPreviewMode) {
                     void actions.loadPreview(snapshot.selectedPath);
                 }
             },
@@ -3517,7 +3530,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                     snapshot.route === "viewer" &&
                     snapshot.viewMode === "display" &&
                     snapshot.selectedNodeType === "dataset" &&
-                    snapshot.displayTab === "heatmap" &&
+                    (snapshot.displayTab === "heatmap" || snapshot.displayTab === "image") &&
                     snapshot.heatmapFullEnabled === true &&
                     Array.isArray(appliedDims) &&
                     appliedDims.length === 2 &&
@@ -3778,7 +3791,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             if (displayTab === "line") {
                 return "line";
             }
-            if (displayTab === "heatmap") {
+            if (displayTab === "heatmap" || displayTab === "image") {
                 return "heatmap";
             }
             return "table";
@@ -5576,6 +5589,13 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     }
 
     const HEATMAP_PREVIEW_COLOR_STOPS = Object.freeze({
+        grayscale: [
+            [0, 0, 0],
+            [64, 64, 64],
+            [128, 128, 128],
+            [192, 192, 192],
+            [255, 255, 255],
+        ],
         viridis: [
             [68, 1, 84],
             [59, 82, 139],
@@ -6485,6 +6505,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     }
 
     function renderVirtualHeatmapShell(state, config) {
+        const resolvedColormap =
+            (state.displayTab || "line") === "image"
+                ? "grayscale"
+                : state.heatmapColormap || "viridis";
         return `
     <div
       class="line-chart-shell heatmap-chart-shell"
@@ -6495,7 +6519,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
       data-heatmap-display-dims="${escapeHtml(config.displayDimsParam || "")}"
       data-heatmap-fixed-indices="${escapeHtml(config.fixedIndicesParam || "")}"
       data-heatmap-selection-key="${escapeHtml(config.selectionKey || "")}"
-      data-heatmap-colormap="${escapeHtml(state.heatmapColormap || "viridis")}"
+      data-heatmap-colormap="${escapeHtml(resolvedColormap)}"
       data-heatmap-grid="${state.heatmapGrid ? "1" : "0"}"
       data-heatmap-line-notation="${escapeHtml(state.notation || "auto")}"
       data-heatmap-line-grid="${state.lineGrid ? "1" : "0"}"
@@ -6553,6 +6577,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const config = resolveHeatmapRuntimeConfig(state, preview);
         const canLoadHighRes = config.supported && config.rows > 0 && config.cols > 0;
         const isEnabled = state.heatmapFullEnabled === true && canLoadHighRes;
+        const resolvedColormap =
+            (state.displayTab || "line") === "image"
+                ? "grayscale"
+                : state.heatmapColormap || "viridis";
 
         const statusText = !config.supported
             ? "Heatmap high-res view requires at least 2 dimensions."
@@ -6567,7 +6595,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const content = isEnabled
             ? renderVirtualHeatmapShell(state, config)
             : renderHeatmapPreview(preview, {
-                heatmapColormap: state.heatmapColormap,
+                heatmapColormap: resolvedColormap,
                 heatmapGrid: state.heatmapGrid,
             });
 
@@ -6587,6 +6615,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
       ${content}
     </div>
   `;
+    }
+
+    function renderImageSection(state, preview) {
+        return renderHeatmapSection(state, preview);
     }
 
     function renderDisplayContent(state) {
@@ -6630,6 +6662,8 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         let dataSection = renderMatrixSection(state, preview);
         if (activeTab === "line") {
             dataSection = renderLineSection(state, preview);
+        } else if (activeTab === "image") {
+            dataSection = renderImageSection(state, preview);
         } else if (activeTab === "heatmap") {
             dataSection = renderHeatmapSection(state, preview);
         }
@@ -9588,6 +9622,13 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
     // Per-colormap RGB stop arrays used by the linear interpolation colormap pipeline for pixel rendering
     const HEATMAP_COLOR_STOPS = Object.freeze({
+        grayscale: [
+            [0, 0, 0],
+            [64, 64, 64],
+            [128, 128, 128],
+            [192, 192, 192],
+            [255, 255, 255],
+        ],
         viridis: [
             [68, 1, 84],
             [59, 82, 139],
@@ -12793,7 +12834,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         var esc = resolveEscapeHtml();
         var targetKey = String(target || "").trim().toLowerCase();
         var options =
-            targetKey === "line" || targetKey === "heatmap"
+            targetKey === "line" || targetKey === "heatmap" || targetKey === "image"
                 ? [
                     { action: "csv-displayed", label: "CSV (Displayed)" },
                     { action: "csv-full", label: "CSV (Full)" },
@@ -12850,7 +12891,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         <button type="button" class="subbar-tab ${activeTab === "line" ? "active" : ""}" data-display-tab="line" ${disabled ? "disabled" : ""
             }>Line Graph</button>
         ${showHeatmap
-                ? `<button type="button" class="subbar-tab ${activeTab === "heatmap" ? "active" : ""
+                ? `<button type="button" class="subbar-tab ${activeTab === "image" ? "active" : ""
+                }" data-display-tab="image" ${disabled ? "disabled" : ""}>Image</button>
+        <button type="button" class="subbar-tab ${activeTab === "heatmap" ? "active" : ""
                 }" data-display-tab="heatmap" ${disabled ? "disabled" : ""}>Heatmap</button>`
                 : ""
             }
@@ -12874,14 +12917,16 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                </div>
                ${renderExportMenu("line", disabled)}
              </div>`
-                : activeTab === "heatmap"
+                : activeTab === "heatmap" || activeTab === "image"
                     ? `<div id="subbar-actions" class="subbar-actions">
                <button type="button" class="subbar-toggle ${state.heatmapGrid ? "active" : ""
                     }" data-heatmap-grid-toggle="true" ${disabled ? "disabled" : ""}>Grid</button>
                <div class="colormap-group">
                  <span class="colormap-label">Color</span>
                  <div class="colormap-tabs">
-                   ${["viridis", "plasma", "inferno", "magma", "cool", "hot"]
+                   ${activeTab === "image"
+                        ? `<button type="button" class="colormap-tab active" ${disabled ? "disabled" : ""}>Gray Scale</button>`
+                        : ["viridis", "plasma", "inferno", "magma", "cool", "hot"]
                         .map(function (value) {
                             return `<button type="button" class="colormap-tab ${state.heatmapColormap === value ? "active" : ""
                                 }" data-heatmap-colormap="${value}" ${disabled ? "disabled" : ""}>${value.charAt(0).toUpperCase() + value.slice(1)
@@ -12890,7 +12935,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                         .join("")}
                  </div>
                </div>
-               ${renderExportMenu("heatmap", disabled)}
+               ${renderExportMenu(activeTab === "image" ? "image" : "heatmap", disabled)}
              </div>`
                     : `<div id="subbar-actions" class="subbar-actions">
                <div class="notation-group">
@@ -13107,7 +13152,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         if (targetKey === "line") {
             return root.querySelector("[data-line-shell]");
         }
-        if (targetKey === "heatmap") {
+        if (targetKey === "heatmap" || targetKey === "image") {
             return root.querySelector("[data-heatmap-shell]");
         }
         return null;
@@ -13121,7 +13166,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         if (targetKey === "line") {
             return root.querySelector("[data-line-status]");
         }
-        if (targetKey === "heatmap") {
+        if (targetKey === "heatmap" || targetKey === "image") {
             return root.querySelector("[data-heatmap-status]");
         }
         return null;
@@ -13163,7 +13208,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     async function runExportAction(root, target, action) {
         var shell = resolveExportShell(root, target);
         var targetLabel =
-            target === "matrix" ? "matrix view" : target === "line" ? "line chart" : "heatmap";
+            target === "matrix" ? "matrix view" : target === "line" ? "line chart" : target === "image" ? "image view" : "heatmap";
 
         if (!shell || !shell.__exportApi) {
             setExportStatus(root, target, "Load full " + targetLabel + " before exporting.", "error");
