@@ -2282,12 +2282,39 @@ body.line-panel-fullscreen-active {
 .heatmap-chart-shell {
     --heatmap-canvas-height: clamp(250px, 50vh, 600px);
     --heatmap-linked-line-height: clamp(200px, calc(100dvh - 520px), 300px);
+    --heatmap-fullscreen-canvas-height: clamp(320px, 58dvh, 780px);
+    --heatmap-fullscreen-linked-line-height: clamp(220px, 30dvh, 360px);
     /* height driven by .heatmap-chart-canvas + linked plot content */
 }
 
 .heatmap-chart-shell.has-linked-plot:not(.is-fullscreen) {
     --heatmap-canvas-height: clamp(200px, calc(100dvh - 560px), 320px);
     --heatmap-linked-line-height: clamp(180px, calc(100dvh - 620px), 280px);
+}
+
+.heatmap-chart-shell.is-fullscreen {
+    overflow-x: hidden;
+    overflow-y: auto;
+    align-items: stretch;
+    justify-content: flex-start;
+    --heatmap-canvas-height: var(--heatmap-fullscreen-canvas-height);
+    --heatmap-linked-line-height: var(--heatmap-fullscreen-linked-line-height);
+}
+
+.heatmap-chart-shell.is-fullscreen>.line-chart-stage {
+    flex: 0 0 auto;
+    min-height: 0;
+}
+
+.heatmap-chart-shell.is-fullscreen>.line-chart-stage>.heatmap-chart-canvas {
+    height: var(--heatmap-canvas-height);
+    min-height: clamp(280px, 54dvh, 760px);
+}
+
+.heatmap-chart-shell.is-fullscreen>.heatmap-linked-plot,
+.heatmap-chart-shell.is-fullscreen>[data-image-histogram-root="true"],
+.heatmap-chart-shell.is-fullscreen>.line-stats {
+    flex: 0 0 auto;
 }
 
 .heatmap-chart-toolbar {
