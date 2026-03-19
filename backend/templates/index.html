@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ service_name }} | API Dashboard</title>
+    <style>
+        :root {
+            --bg: #F8FAFF;
+            --surface: #FFFFFF;
+            --surface-alt: #F2F6FF;
+            --border: #D9E2F2;
+            --text-primary: #0F172A;
+            --text-secondary: #475569;
+            --primary: #2563EB;
+            --primary-hover: #1D4ED8;
+            --accent: #38BDF8;
+            --success: #16A34A;
+            --success-bg: #ECFDF3;
+            --warning: #D97706;
+            --warning-bg: #FFFBEB;
+            --error: #DC2626;
+            --error-bg: #FEF2F2;
+            --info: #0EA5E9;
+            --info-bg: #F0F9FF;
+            --radius: 16px;
+            --shadow: 0 14px 40px rgba(15, 23, 42, 0.08);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: "Manrope", "Segoe UI Variable", "Trebuchet MS", sans-serif;
+            color: var(--text-primary);
+            background:
+                radial-gradient(circle at 100% 0%, rgba(56, 189, 248, 0.18), transparent 36%),
+                radial-gradient(circle at 0% 100%, rgba(37, 99, 235, 0.14), transparent 40%),
+                var(--bg);
+            line-height: 1.45;
+        }
+
+        .page {
+            width: min(1240px, calc(100% - 32px));
+            margin: 20px auto 40px;
+            display: grid;
+            gap: 16px;
+        }
+
+        .panel {
+            background: linear-gradient(150deg, #FFFFFF 0%, #F7FAFF 100%);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+        }
+
+        .hero {
+            padding: 22px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::after {
+            content: "";
+            position: absolute;
+            right: -40px;
+            top: -50px;
+            width: 180px;
+            height: 180px;
+            border-radius: 40%;
+            background: linear-gradient(135deg, rgba(37, 99, 235, 0.2), rgba(56, 189, 248, 0.12));
+            transform: rotate(18deg);
+            pointer-events: none;
+        }
+
+        .hero-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .service-title {
+            margin: 0;
+            font-size: clamp(1.4rem, 2.3vw, 2.1rem);
+            letter-spacing: 0.2px;
+        }
+
+        .service-subtitle {
+            margin: 8px 0 0;
+            color: var(--text-secondary);
+        }
+
+        .status-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            font-size: 0.88rem;
+            border: 1px solid var(--border);
+            background: var(--surface-alt);
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--warning);
+        }
+
+        .status-dot.online {
+            background: var(--success);
+            box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.4);
+            animation: pulse 1.8s infinite;
+        }
+
+        .status-dot.offline {
+            background: var(--error);
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.45); }
+            70% { box-shadow: 0 0 0 8px rgba(22, 163, 74, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
+        }
+
+        .metric-grid {
+            margin-top: 16px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+        }
+
+        .metric {
+            padding: 12px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+
+        .metric-label {
+            color: var(--text-secondary);
+            font-size: 0.82rem;
+            margin-bottom: 4px;
+        }
+
+        .metric-value {
+            font-size: 1.04rem;
+            font-weight: 700;
+        }
+
+        .controls {
+            padding: 12px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .controls input,
+        .controls select {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 12px;
+            background: var(--surface);
+            color: var(--text-primary);
+            font-size: 0.95rem;
+        }
+
+        .controls input {
+            flex: 1 1 240px;
+            min-width: 220px;
+        }
+
+        .controls .hint {
+            color: var(--text-secondary);
+            font-size: 0.84rem;
+            margin-left: auto;
+        }
+
+        .endpoint-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .endpoint-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 14px;
+            box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
+            animation: cardIn 420ms ease both;
+            width: 100%;
+        }
+
+        @keyframes cardIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .endpoint-head {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+        }
+
+        .method {
+            font-size: 0.76rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            padding: 4px 8px;
+            border-radius: 999px;
+            border: 1px solid transparent;
+        }
+
+        .method.get {
+            color: var(--info);
+            background: var(--info-bg);
+            border-color: rgba(14, 165, 233, 0.35);
+        }
+
+        .method.post {
+            color: var(--warning);
+            background: var(--warning-bg);
+            border-color: rgba(217, 119, 6, 0.3);
+        }
+
+        .path {
+            font-weight: 700;
+            font-size: 0.98rem;
+            color: var(--text-primary);
+            word-break: break-all;
+        }
+
+        .summary {
+            margin: 0 0 10px;
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .endpoint-url {
+            margin: 0 0 10px;
+            color: var(--text-secondary);
+            font-size: 0.82rem;
+            word-break: break-all;
+        }
+
+        .endpoint-url code {
+            color: var(--text-primary);
+            background: var(--surface-alt);
+            border: 1px solid var(--border);
+            padding: 2px 6px;
+            border-radius: 8px;
+        }
+
+        .param-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 10px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .param-table th,
+        .param-table td {
+            text-align: left;
+            padding: 8px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.82rem;
+            vertical-align: top;
+        }
+
+        .param-table th {
+            background: var(--surface-alt);
+            color: var(--text-secondary);
+            font-weight: 700;
+        }
+
+        .param-table tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .badge-required,
+        .badge-optional {
+            display: inline-block;
+            border-radius: 999px;
+            padding: 2px 8px;
+            font-size: 0.72rem;
+            font-weight: 700;
+        }
+
+        .badge-required {
+            color: var(--error);
+            background: var(--error-bg);
+        }
+
+        .badge-optional {
+            color: var(--success);
+            background: var(--success-bg);
+        }
+
+        .example {
+            margin: 0;
+            padding: 10px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--surface-alt);
+            font-size: 0.8rem;
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: var(--text-primary);
+        }
+
+        .copy-btn {
+            margin-top: 8px;
+            border: 1px solid rgba(37, 99, 235, 0.3);
+            background: rgba(37, 99, 235, 0.08);
+            color: var(--primary);
+            border-radius: 10px;
+            padding: 6px 10px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: 0.15s ease;
+        }
+
+        .copy-btn:hover {
+            background: rgba(29, 78, 216, 0.14);
+            color: var(--primary-hover);
+        }
+
+        .no-params {
+            margin: 0 0 10px;
+            padding: 8px 10px;
+            border-radius: 10px;
+            background: var(--success-bg);
+            color: var(--success);
+            border: 1px solid rgba(22, 163, 74, 0.28);
+            font-size: 0.82rem;
+        }
+
+        .empty {
+            padding: 18px;
+            text-align: center;
+            color: var(--text-secondary);
+            border: 1px dashed var(--border);
+            border-radius: 12px;
+            background: var(--surface);
+        }
+
+        .footer {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.82rem;
+            margin-top: 6px;
+        }
+
+        @media (max-width: 760px) {
+            .page {
+                width: calc(100% - 20px);
+                margin: 10px auto 24px;
+            }
+
+            .hero {
+                padding: 16px;
+            }
+
+            .controls {
+                padding: 10px;
+            }
+
+            .controls .hint {
+                width: 100%;
+                margin-left: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <section class="panel hero">
+            <div class="hero-top">
+                <div>
+                    <h1 class="service-title">{{ service_name }} API Dashboard</h1>
+                    <p class="service-subtitle">
+                        Root documentation page for runtime status, endpoint parameters, and curl-ready examples.
+                    </p>
+                </div>
+                <div class="status-pill">
+                    <span id="status-dot" class="status-dot"></span>
+                    <span id="status-text">Checking health...</span>
+                </div>
+            </div>
+
+            <div class="metric-grid">
+                <article class="metric">
+                    <div class="metric-label">Server</div>
+                    <div class="metric-value" id="metric-server">-</div>
+                </article>
+                <article class="metric">
+                    <div class="metric-label">Debug Mode</div>
+                    <div class="metric-value" id="metric-debug">-</div>
+                </article>
+                <article class="metric">
+                    <div class="metric-label">Uptime</div>
+                    <div class="metric-value" id="metric-uptime">-</div>
+                </article>
+                <article class="metric">
+                    <div class="metric-label">Endpoints</div>
+                    <div class="metric-value" id="metric-endpoints">-</div>
+                </article>
+            </div>
+        </section>
+
+        <section class="panel controls">
+            <input id="search" type="text" placeholder="Search by path, method, summary, or parameter">
+            <select id="method-filter" aria-label="Filter by HTTP method">
+                <option value="ALL">All methods</option>
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+            </select>
+            <span id="result-hint" class="hint">0 endpoint(s) shown</span>
+        </section>
+
+        <section id="endpoint-grid" class="endpoint-grid"></section>
+
+        <p class="footer">
+            Health auto-refresh every 15 seconds. Use endpoint cards for request shape and quick curl commands.
+        </p>
+    </main>
+
+    <script id="runtime-data" type="application/json">{{ runtime | tojson }}</script>
+    <script id="endpoints-data" type="application/json">{{ endpoints | tojson }}</script>
+    <script>
+        const runtime = JSON.parse(
+            document.getElementById("runtime-data")?.textContent || "{}"
+        );
+        const endpoints = JSON.parse(
+            document.getElementById("endpoints-data")?.textContent || "[]"
+        );
+        const state = {
+            query: "",
+            method: "ALL"
+        };
+
+        const statusDot = document.getElementById("status-dot");
+        const statusText = document.getElementById("status-text");
+        const serverMetric = document.getElementById("metric-server");
+        const debugMetric = document.getElementById("metric-debug");
+        const uptimeMetric = document.getElementById("metric-uptime");
+        const endpointMetric = document.getElementById("metric-endpoints");
+        const endpointGrid = document.getElementById("endpoint-grid");
+        const resultHint = document.getElementById("result-hint");
+        const searchInput = document.getElementById("search");
+        const methodFilter = document.getElementById("method-filter");
+
+        function escapeHtml(text) {
+            return String(text)
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll("\"", "&quot;")
+                .replaceAll("'", "&#039;");
+        }
+
+        function formatDefault(value) {
+            if (value === null || value === undefined || value === "") {
+                return "-";
+            }
+            return String(value);
+        }
+
+        function methodClass(method) {
+            return method.toLowerCase() === "post" ? "post" : "get";
+        }
+
+        function endpointMatches(endpoint) {
+            if (state.method !== "ALL" && endpoint.method !== state.method) {
+                return false;
+            }
+
+            if (!state.query) {
+                return true;
+            }
+
+            const searchSpace = [
+                endpoint.method,
+                endpoint.path,
+                endpoint.url || "",
+                endpoint.summary,
+                ...(endpoint.params || []).map((param) => `${param.name} ${param.description}`)
+            ].join(" ").toLowerCase();
+
+            return searchSpace.includes(state.query);
+        }
+
+        function renderEndpoints() {
+            const filtered = endpoints.filter(endpointMatches);
+            endpointMetric.textContent = String(endpoints.length);
+            resultHint.textContent = `${filtered.length} endpoint(s) shown`;
+
+            if (filtered.length === 0) {
+                endpointGrid.innerHTML = `
+                    <div class="empty">
+                        No endpoints matched your filter. Try a different method or search term.
+                    </div>
+                `;
+                return;
+            }
+
+            endpointGrid.innerHTML = filtered.map((endpoint, index) => {
+                const params = endpoint.params || [];
+                const paramsBlock = params.length
+                    ? `
+                        <table class="param-table">
+                            <thead>
+                                <tr>
+                                    <th>Param</th>
+                                    <th>Required</th>
+                                    <th>Type</th>
+                                    <th>Default</th>
+                                    <th>Description</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${params.map((param) => `
+                                    <tr>
+                                        <td><code>${escapeHtml(param.name)}</code></td>
+                                        <td>${param.required ? '<span class="badge-required">Required</span>' : '<span class="badge-optional">Optional</span>'}</td>
+                                        <td>${escapeHtml(param.type)}</td>
+                                        <td>${escapeHtml(formatDefault(param.default))}</td>
+                                        <td>${escapeHtml(param.description)}</td>
+                                    </tr>
+                                `).join("")}
+                            </tbody>
+                        </table>
+                    `
+                    : '<p class="no-params">No query parameters required.</p>';
+
+                return `
+                    <article class="endpoint-card" style="animation-delay:${index * 40}ms">
+                        <div class="endpoint-head">
+                            <span class="method ${methodClass(endpoint.method)}">${escapeHtml(endpoint.method)}</span>
+                            <span class="path"><code>${escapeHtml(endpoint.path)}</code></span>
+                        </div>
+                        <p class="endpoint-url">URL: <code>${escapeHtml(endpoint.url || endpoint.path)}</code></p>
+                        <p class="summary">${escapeHtml(endpoint.summary)}</p>
+                        ${paramsBlock}
+                        <p class="example"><code>${escapeHtml(endpoint.example || "")}</code></p>
+                        <button class="copy-btn" type="button" data-curl="${escapeHtml(endpoint.example || "")}">Copy curl</button>
+                    </article>
+                `;
+            }).join("");
+
+            endpointGrid.querySelectorAll(".copy-btn").forEach((button) => {
+                button.addEventListener("click", async () => {
+                    const command = button.getAttribute("data-curl") || "";
+                    try {
+                        await navigator.clipboard.writeText(command);
+                        button.textContent = "Copied";
+                        setTimeout(() => { button.textContent = "Copy curl"; }, 1000);
+                    } catch (_error) {
+                        button.textContent = "Copy failed";
+                        setTimeout(() => { button.textContent = "Copy curl"; }, 1200);
+                    }
+                });
+            });
+        }
+
+        function updateRuntimeMetrics() {
+            serverMetric.textContent = runtime.base_url || `${runtime.host}:${runtime.port}`;
+            debugMetric.textContent = runtime.debug ? "Enabled" : "Disabled";
+        }
+
+        function updateUptime() {
+            const startedAt = new Date(runtime.started_at);
+            const now = new Date();
+            const deltaMs = Math.max(0, now.getTime() - startedAt.getTime());
+            const seconds = Math.floor(deltaMs / 1000);
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = seconds % 60;
+            uptimeMetric.textContent = `${h}h ${m}m ${s}s`;
+        }
+
+        function setStatusOnline(payload) {
+            statusDot.classList.remove("offline");
+            statusDot.classList.add("online");
+            const checkedAt = payload && payload.timestamp ? payload.timestamp : new Date().toISOString();
+            statusText.textContent = `Online (${checkedAt})`;
+        }
+
+        function setStatusOffline() {
+            statusDot.classList.remove("online");
+            statusDot.classList.add("offline");
+            statusText.textContent = "Offline (health check failed)";
+        }
+
+        async function refreshHealth() {
+            try {
+                const response = await fetch("/health", {
+                    method: "GET",
+                    cache: "no-store",
+                    headers: { "Accept": "application/json" }
+                });
+
+                if (!response.ok) {
+                    throw new Error("Health endpoint returned non-200 response");
+                }
+
+                const payload = await response.json();
+                setStatusOnline(payload);
+            } catch (_error) {
+                setStatusOffline();
+            }
+        }
+
+        searchInput.addEventListener("input", (event) => {
+            state.query = String(event.target.value || "").trim().toLowerCase();
+            renderEndpoints();
+        });
+
+        methodFilter.addEventListener("change", (event) => {
+            state.method = String(event.target.value || "ALL");
+            renderEndpoints();
+        });
+
+        updateRuntimeMetrics();
+        updateUptime();
+        renderEndpoints();
+        refreshHealth();
+
+        setInterval(updateUptime, 1000);
+        setInterval(refreshHealth, 15000);
+    </script>
+</body>
+</html>
