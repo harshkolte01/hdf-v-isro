@@ -5934,6 +5934,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             class="image-histogram-svg"
             data-image-histogram-svg="true"
             viewBox="0 0 760 220"
+            preserveAspectRatio="none"
             role="img"
             aria-label="${escapeHtml(ariaLabel)}"
           ></svg>
