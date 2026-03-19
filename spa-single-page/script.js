@@ -5699,6 +5699,255 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         });
     }
 
+    function resolveImageHistogramBinCount(min, max, valueCount, allIntegerLike = false) {
+        const safeCount = Math.max(0, Number(valueCount) || 0);
+        if (safeCount <= 1 || !(max > min)) {
+            return 1;
+        }
+        if (allIntegerLike && min >= 0 && max <= 255) {
+            return 256;
+        }
+        if (safeCount <= 512) {
+            return Math.max(24, Math.min(64, Math.round(Math.sqrt(safeCount) * 1.5)));
+        }
+        return 96;
+    }
+
+    function estimateImageHistogramQuantile(histogram, quantile) {
+        if (!histogram || !Array.isArray(histogram.bins) || histogram.count <= 0) {
+            return null;
+        }
+
+        const q = clamp(Number(quantile), 0, 1);
+        if (!(histogram.max > histogram.min)) {
+            return histogram.min;
+        }
+
+        const target = q * Math.max(0, histogram.count - 1);
+        let cumulative = 0;
+        for (let index = 0; index < histogram.bins.length; index += 1) {
+            const binCount = Math.max(0, Number(histogram.bins[index]) || 0);
+            if (binCount <= 0) {
+                continue;
+            }
+            const nextCumulative = cumulative + binCount;
+            if (target <= nextCumulative - 1 || index === histogram.bins.length - 1) {
+                const localOffset = clamp((target - cumulative) / binCount, 0, 1);
+                const binStart = histogram.min + (index / histogram.binCount) * (histogram.max - histogram.min);
+                return binStart + localOffset * histogram.binWidth;
+            }
+            cumulative = nextCumulative;
+        }
+
+        return histogram.max;
+    }
+
+    function buildImageHistogramData(valuesInput, options = {}) {
+        const values =
+            valuesInput && typeof valuesInput.length === "number"
+                ? valuesInput
+                : [];
+
+        let min = Infinity;
+        let max = -Infinity;
+        let count = 0;
+        let mean = 0;
+        let m2 = 0;
+        let allIntegerLike = true;
+
+        for (let index = 0; index < values.length; index += 1) {
+            const numeric = Number(values[index]);
+            if (!Number.isFinite(numeric)) {
+                continue;
+            }
+
+            count += 1;
+            min = Math.min(min, numeric);
+            max = Math.max(max, numeric);
+            if (allIntegerLike && Math.abs(numeric - Math.round(numeric)) > 1e-9) {
+                allIntegerLike = false;
+            }
+
+            const delta = numeric - mean;
+            mean += delta / count;
+            m2 += delta * (numeric - mean);
+        }
+
+        if (!count) {
+            return null;
+        }
+
+        if (!(max > min)) {
+            max = min + 1;
+        }
+
+        const requestedBinCount = Math.round(Number(options.binCount) || 0);
+        const binCount = Math.max(
+            1,
+            Math.min(
+                256,
+                requestedBinCount || resolveImageHistogramBinCount(min, max, count, allIntegerLike)
+            )
+        );
+        const span = max - min;
+        const binWidth = span / Math.max(1, binCount);
+        const bins = Array.from({ length: binCount }, () => 0);
+
+        for (let index = 0; index < values.length; index += 1) {
+            const numeric = Number(values[index]);
+            if (!Number.isFinite(numeric)) {
+                continue;
+            }
+            const ratio = span <= 0 ? 0 : (numeric - min) / span;
+            const binIndex = clamp(Math.floor(ratio * binCount), 0, binCount - 1);
+            bins[binIndex] += 1;
+        }
+
+        let peakCount = 0;
+        let peakIndex = 0;
+        for (let index = 0; index < bins.length; index += 1) {
+            if (bins[index] > peakCount) {
+                peakCount = bins[index];
+                peakIndex = index;
+            }
+        }
+
+        const histogram = {
+            count,
+            min,
+            max,
+            mean,
+            stdDev: count > 1 ? Math.sqrt(m2 / count) : 0,
+            bins,
+            binCount,
+            binWidth,
+            peakCount,
+            peakIndex,
+            peakStart: min + peakIndex * binWidth,
+            peakEnd: min + (peakIndex + 1) * binWidth,
+            peakValue: min + (peakIndex + 0.5) * binWidth,
+        };
+
+        histogram.median = estimateImageHistogramQuantile(histogram, 0.5);
+        return histogram;
+    }
+
+    function renderImageHistogramEmptyMarkup(message) {
+        const text = message || "Histogram is unavailable for this image.";
+        return `
+    <div class="image-histogram-panel">
+      <div class="image-histogram-header">
+        <div>
+          <div class="image-histogram-title">Histogram</div>
+          <div class="image-histogram-subtitle">Intensity distribution for the current image slice</div>
+        </div>
+      </div>
+      <div class="image-histogram-empty">${escapeHtml(text)}</div>
+    </div>
+  `;
+    }
+
+    function renderImageHistogramMarkup(histogram, options = {}) {
+        if (!histogram || !Array.isArray(histogram.bins) || !histogram.bins.length) {
+            return renderImageHistogramEmptyMarkup(options.emptyMessage || "Histogram is unavailable for this image.");
+        }
+
+        const title = options.title || "Histogram";
+        const subtitle = options.subtitle || "Intensity distribution for the current image slice";
+        const ariaLabel = options.ariaLabel || "Image histogram";
+        const width = Number.isFinite(Number(options.width)) ? Number(options.width) : 760;
+        const height = Number.isFinite(Number(options.height)) ? Number(options.height) : 190;
+        const paddingLeft = 42;
+        const paddingRight = 14;
+        const paddingTop = 16;
+        const paddingBottom = 30;
+        const chartWidth = Math.max(140, width - paddingLeft - paddingRight);
+        const chartHeight = Math.max(80, height - paddingTop - paddingBottom);
+        const baselineY = paddingTop + chartHeight;
+        const maxCount = Math.max(1, histogram.peakCount);
+        const midValue = histogram.min + (histogram.max - histogram.min) / 2;
+
+        const bars = histogram.bins
+            .map((count, index) => {
+                if (count <= 0) {
+                    return "";
+                }
+                const startX = paddingLeft + (index / histogram.binCount) * chartWidth;
+                const endX = paddingLeft + ((index + 1) / histogram.binCount) * chartWidth;
+                const barWidth = Math.max(1, endX - startX - 0.45);
+                const barHeight = (count / maxCount) * chartHeight;
+                const y = baselineY - barHeight;
+                const toneRatio = histogram.binCount <= 1 ? 0.5 : index / (histogram.binCount - 1);
+                const tone = Math.round(22 + toneRatio * 220);
+                return `
+            <rect
+              x="${startX.toFixed(3)}"
+              y="${y.toFixed(3)}"
+              width="${barWidth.toFixed(3)}"
+              height="${Math.max(0.85, barHeight).toFixed(3)}"
+              rx="1.2"
+              fill="rgb(${tone}, ${tone}, ${tone})"
+            ></rect>
+          `;
+            })
+            .join("");
+
+        const peakLabel = histogram.peakCount > 0
+            ? formatHeatmapScaleValue(histogram.peakValue)
+            : "--";
+
+        return `
+    <div class="image-histogram-panel">
+      <div class="image-histogram-header">
+        <div>
+          <div class="image-histogram-title">${escapeHtml(title)}</div>
+          <div class="image-histogram-subtitle">${escapeHtml(subtitle)}</div>
+        </div>
+        <span class="image-histogram-badge">${histogram.binCount} bins</span>
+      </div>
+        <svg
+          class="image-histogram-svg"
+          viewBox="0 0 ${width} ${height}"
+          role="img"
+          aria-label="${escapeHtml(ariaLabel)}"
+      >
+        <rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="12" fill="#F8FAFC" stroke="#D9E2F2"></rect>
+        <line x1="${paddingLeft}" y1="${paddingTop}" x2="${paddingLeft}" y2="${baselineY}" stroke="rgba(71,85,105,0.28)" stroke-width="1"></line>
+        <line x1="${paddingLeft}" y1="${baselineY}" x2="${paddingLeft + chartWidth}" y2="${baselineY}" stroke="rgba(71,85,105,0.28)" stroke-width="1"></line>
+        <line
+          x1="${paddingLeft}"
+          y1="${paddingTop + chartHeight / 2}"
+          x2="${paddingLeft + chartWidth}"
+          y2="${paddingTop + chartHeight / 2}"
+          stroke="rgba(148,163,184,0.18)"
+          stroke-dasharray="4 4"
+          stroke-width="1"
+        ></line>
+        ${bars}
+        <g class="line-axis-labels">
+          <text x="${paddingLeft - 6}" y="${paddingTop + 9}" text-anchor="end">${histogram.peakCount.toLocaleString()}</text>
+          <text x="${paddingLeft - 6}" y="${baselineY + 4}" text-anchor="end">0</text>
+          <text x="${paddingLeft}" y="${baselineY + 18}" text-anchor="start">${escapeHtml(
+            formatHeatmapScaleValue(histogram.min)
+        )}</text>
+          <text x="${paddingLeft + chartWidth / 2}" y="${baselineY + 18}" text-anchor="middle">${escapeHtml(
+            formatHeatmapScaleValue(midValue)
+        )}</text>
+          <text x="${paddingLeft + chartWidth}" y="${baselineY + 18}" text-anchor="end">${escapeHtml(
+            formatHeatmapScaleValue(histogram.max)
+        )}</text>
+        </g>
+      </svg>
+      <div class="image-histogram-stats">
+        <span>mean: ${escapeHtml(formatCell(histogram.mean))}</span>
+        <span>median: ${escapeHtml(formatCell(histogram.median))}</span>
+        <span>std: ${escapeHtml(formatCell(histogram.stdDev))}</span>
+        <span>peak: ${escapeHtml(peakLabel)}</span>
+      </div>
+    </div>
+  `;
+    }
+
     function renderHeatmapPreview(preview, options = {}) {
         const colormap = options.heatmapColormap || "viridis";
         const showGrid = options.heatmapGrid !== false;
@@ -5721,26 +5970,19 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const normalizedRows = rawRows.map((row) =>
             Array.from({ length: colCount }, (_, index) => (index < row.length ? row[index] : null))
         );
-
-        let min = Infinity;
-        let max = -Infinity;
-        let hasNumericValue = false;
+        const previewValues = [];
         for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
             const row = normalizedRows[rowIndex];
             for (let colIndex = 0; colIndex < colCount; colIndex += 1) {
-                const numeric = Number(row[colIndex]);
-                if (!Number.isFinite(numeric)) {
-                    continue;
-                }
-                hasNumericValue = true;
-                min = Math.min(min, numeric);
-                max = Math.max(max, numeric);
+                previewValues.push(row[colIndex]);
             }
         }
-
-        if (!hasNumericValue) {
+        const histogramData = buildImageHistogramData(previewValues);
+        if (!histogramData) {
             return '<div class="panel-state"><div class="state-text">Heatmap preview requires numeric values.</div></div>';
         }
+        const min = histogramData.min;
+        const max = histogramData.max;
 
         const width = 760;
         const height = 420;
@@ -5815,6 +6057,13 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 return `<text x="${(chartX - 10).toFixed(2)}" y="${y.toFixed(2)}" text-anchor="end">${label}</text>`;
             })
             .join("");
+        const histogramMarkup = options.includeHistogram === true
+            ? renderImageHistogramMarkup(histogramData, {
+                title: options.histogramTitle || "Histogram",
+                subtitle: options.histogramSubtitle || "Sampled grayscale distribution for the preview slice",
+                ariaLabel: options.histogramAriaLabel || "Preview image histogram",
+            })
+            : "";
 
         return `
     <div class="line-chart-shell heatmap-chart-shell heatmap-preview-chart-shell">
@@ -5872,6 +6121,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
           </g>
         </svg>
       </div>
+      ${histogramMarkup}
       <div class="line-stats">
         <span>min: ${escapeHtml(formatCell(min))}</span>
         <span>max: ${escapeHtml(formatCell(max))}</span>
@@ -5891,6 +6141,18 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     if (typeof renderHeatmapPreview !== "undefined") {
         moduleState.renderHeatmapPreview = renderHeatmapPreview;
         global.renderHeatmapPreview = renderHeatmapPreview;
+    }
+    if (typeof buildImageHistogramData !== "undefined") {
+        moduleState.buildImageHistogramData = buildImageHistogramData;
+        global.buildImageHistogramData = buildImageHistogramData;
+    }
+    if (typeof renderImageHistogramMarkup !== "undefined") {
+        moduleState.renderImageHistogramMarkup = renderImageHistogramMarkup;
+        global.renderImageHistogramMarkup = renderImageHistogramMarkup;
+    }
+    if (typeof renderImageHistogramEmptyMarkup !== "undefined") {
+        moduleState.renderImageHistogramEmptyMarkup = renderImageHistogramEmptyMarkup;
+        global.renderImageHistogramEmptyMarkup = renderImageHistogramEmptyMarkup;
     }
     if (ns.core && typeof ns.core.registerModule === "function") {
         ns.core.registerModule("components/viewerPanel/render/previews");
@@ -6504,15 +6766,26 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
   `;
     }
 
-    function renderVirtualHeatmapShell(state, config) {
+    function renderVirtualHeatmapShell(state, config, options = {}) {
+        const isImageMode = (state.displayTab || "line") === "image";
+        const includeImageHistogram = options && options.includeImageHistogram === true;
         const resolvedColormap =
-            (state.displayTab || "line") === "image"
+            isImageMode
                 ? "grayscale"
                 : state.heatmapColormap || "viridis";
+        const histogramPlaceholder =
+            typeof global.renderImageHistogramEmptyMarkup === "function"
+                ? global.renderImageHistogramEmptyMarkup("Histogram updates with the current image slice.")
+                : `
+        <div class="image-histogram-panel">
+          <div class="image-histogram-empty">Histogram updates with the current image slice.</div>
+        </div>
+      `;
         return `
     <div
       class="line-chart-shell heatmap-chart-shell"
       data-heatmap-shell="true"
+      data-heatmap-mode="${isImageMode ? "image" : "heatmap"}"
       data-heatmap-file-key="${escapeHtml(state.selectedFile || "")}"
       data-heatmap-file-etag="${escapeHtml(state.selectedFileEtag || "")}"
       data-heatmap-path="${escapeHtml(state.selectedPath || "/")}"
@@ -6545,7 +6818,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
           data-heatmap-canvas="true"
           tabindex="0"
           role="application"
-          aria-label="Heatmap chart"
+          aria-label="${isImageMode ? "Grayscale image view" : "Heatmap chart"}"
         >
           <canvas class="heatmap-canvas" data-heatmap-surface="true"></canvas>
           <div class="line-hover" data-heatmap-hover="true" hidden></div>
@@ -6564,6 +6837,13 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         </div>
         <div class="heatmap-linked-plot-shell-host" data-heatmap-linked-shell-host="true"></div>
       </div>
+      ${includeImageHistogram
+                ? `
+      <div data-image-histogram-root="true">
+        ${histogramPlaceholder}
+      </div>
+      `
+                : ""}
       <div class="line-stats">
         <span data-heatmap-stat-min="true">min: --</span>
         <span data-heatmap-stat-max="true">max: --</span>
@@ -6618,7 +6898,47 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     }
 
     function renderImageSection(state, preview) {
-        return renderHeatmapSection(state, preview);
+        const config = resolveHeatmapRuntimeConfig(state, preview);
+        const canLoadHighRes = config.supported && config.rows > 0 && config.cols > 0;
+        const isEnabled = state.heatmapFullEnabled === true && canLoadHighRes;
+
+        const statusText = !config.supported
+            ? "Heatmap high-res view requires at least 2 dimensions."
+            : config.rows <= 0 || config.cols <= 0
+                ? "No values available for the selected display dims."
+                : isEnabled
+                    ? "Wheel to zoom. Use Hand to pan."
+                    : "Preview mode. Click Load high-res.";
+        const statusTone = !config.supported || config.rows <= 0 || config.cols <= 0 ? "error" : "info";
+        const statusClass = `data-status ${statusTone === "error" ? "error" : "info"}`;
+
+        const content = isEnabled
+            ? renderVirtualHeatmapShell(state, config, { includeImageHistogram: true })
+            : renderHeatmapPreview(preview, {
+                heatmapColormap: "grayscale",
+                heatmapGrid: state.heatmapGrid,
+                includeHistogram: true,
+                histogramTitle: "Histogram",
+                histogramSubtitle: "Sampled grayscale distribution for the preview slice",
+                histogramAriaLabel: "Preview image histogram",
+            });
+
+        return `
+    <div class="data-section">
+      <div class="data-actions">
+        <button
+          type="button"
+          class="data-btn"
+          data-heatmap-enable="true"
+          ${!canLoadHighRes || isEnabled ? "disabled" : ""}
+        >
+          Load high-res
+        </button>
+        <span class="${statusClass}" data-heatmap-status="true">${escapeHtml(statusText)}</span>
+      </div>
+      ${content}
+    </div>
+  `;
     }
 
     function renderDisplayContent(state) {
@@ -9619,6 +9939,25 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     const HEATMAP_SELECTION_VIEW_CACHE = new Map();  // rendered ImageData cache keyed by selection+colormap
     const HEATMAP_FULLSCREEN_RESTORE_TTL_MS = 1200;  // ms a restore target stays live after fullscreen exit
     let heatmapFullscreenRestore = null;
+    const previewRenderModule = ns.components?.viewerPanel?.render?.previews || null;
+    const buildImageHistogramData =
+        typeof previewRenderModule?.buildImageHistogramData === "function"
+            ? previewRenderModule.buildImageHistogramData
+            : typeof global.buildImageHistogramData === "function"
+                ? global.buildImageHistogramData
+                : null;
+    const renderImageHistogramMarkup =
+        typeof previewRenderModule?.renderImageHistogramMarkup === "function"
+            ? previewRenderModule.renderImageHistogramMarkup
+            : typeof global.renderImageHistogramMarkup === "function"
+                ? global.renderImageHistogramMarkup
+                : null;
+    const renderImageHistogramEmptyMarkup =
+        typeof previewRenderModule?.renderImageHistogramEmptyMarkup === "function"
+            ? previewRenderModule.renderImageHistogramEmptyMarkup
+            : typeof global.renderImageHistogramEmptyMarkup === "function"
+                ? global.renderImageHistogramEmptyMarkup
+                : null;
 
     // Per-colormap RGB stop arrays used by the linear interpolation colormap pipeline for pixel rendering
     const HEATMAP_COLOR_STOPS = Object.freeze({
@@ -10100,6 +10439,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const minStat = shell.querySelector("[data-heatmap-stat-min]");
         const maxStat = shell.querySelector("[data-heatmap-stat-max]");
         const rangeStat = shell.querySelector("[data-heatmap-stat-range]");
+        const histogramRoot = shell.querySelector("[data-image-histogram-root]");
         let linkedPlotPanel = shell.querySelector("[data-heatmap-linked-plot]");
         let linkedPlotTitle = shell.querySelector("[data-heatmap-linked-title]");
         let linkedPlotShellHost = shell.querySelector("[data-heatmap-linked-shell-host]");
@@ -10248,6 +10588,47 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             }
         }
 
+        function setImageHistogramEmptyState(message) {
+            if (!histogramRoot) {
+                return;
+            }
+            if (typeof renderImageHistogramEmptyMarkup === "function") {
+                histogramRoot.innerHTML = renderImageHistogramEmptyMarkup(message);
+                return;
+            }
+            histogramRoot.innerHTML = `
+      <div class="image-histogram-panel">
+        <div class="image-histogram-empty">${message || "Histogram is unavailable for this image."}</div>
+      </div>
+    `;
+        }
+
+        function updateImageHistogram() {
+            if (!histogramRoot) {
+                return;
+            }
+            if (
+                typeof buildImageHistogramData !== "function" ||
+                typeof renderImageHistogramMarkup !== "function"
+            ) {
+                setImageHistogramEmptyState("Histogram is unavailable in this build.");
+                return;
+            }
+            const histogram = buildImageHistogramData(runtime.values);
+            if (!histogram) {
+                setImageHistogramEmptyState("Histogram is unavailable for the current image slice.");
+                return;
+            }
+            histogramRoot.innerHTML = renderImageHistogramMarkup(histogram, {
+                title: "Histogram",
+                subtitle:
+                    runtime.loadedPhase === "highres"
+                        ? "Displayed grayscale distribution for the current slice"
+                        : "Preview grayscale distribution for the current slice",
+                ariaLabel: "Image histogram",
+            });
+        }
+
         function persistViewState() {
             const persistedCell =
                 runtime.selectedCell &&
@@ -10358,6 +10739,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             hideTooltip();
             updateLabels();
             setPanState();
+            updateImageHistogram();
             renderHeatmap();
 
             const clampedPan = clampPanForZoom(runtime.panX, runtime.panY, runtime.zoom);
@@ -11213,6 +11595,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
                 hideTooltip();
                 updateLabels();
+                updateImageHistogram();
                 renderHeatmap();
                 if (preservedView) {
                     const clampedPan = clampPanForZoom(runtime.panX, runtime.panY, runtime.zoom);
@@ -11454,6 +11837,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 queueSelectionUpdate(nextSelection, options);
             },
         };
+
+        if (histogramRoot) {
+            setImageHistogramEmptyState("Histogram updates with the current image slice.");
+        }
 
         function onWheel(event) {
             event.preventDefault();

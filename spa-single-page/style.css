@@ -2589,6 +2589,75 @@ body.line-panel-fullscreen-active {
     overflow-anchor: none;
 }
 
+/* Image Histogram */
+.image-histogram-panel {
+    border-top: 1px solid var(--border);
+    padding-top: var(--spacing-sm);
+    display: grid;
+    gap: var(--spacing-sm);
+    min-width: 0;
+}
+
+.image-histogram-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--spacing-sm);
+    flex-wrap: wrap;
+}
+
+.image-histogram-title {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: 0.01em;
+}
+
+.image-histogram-subtitle {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.image-histogram-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.25rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface-alt);
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.image-histogram-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+
+.image-histogram-stats {
+    display: flex;
+    gap: var(--spacing-md);
+    flex-wrap: wrap;
+    font-size: 0.74rem;
+    color: var(--text-secondary);
+}
+
+.image-histogram-empty {
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface-alt);
+    color: var(--text-secondary);
+    padding: 0.75rem 0.85rem;
+    font-size: 0.74rem;
+    line-height: 1.45;
+}
+
 /* Heatmap Static Preview */
 .preview-heatmap {
     width: 100%;
