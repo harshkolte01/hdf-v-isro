@@ -2571,6 +2571,22 @@ body.line-panel-fullscreen-active {
 .heatmap-linked-plot-shell-host {
     width: 100%;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+}
+
+.heatmap-linked-line-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-xs);
+}
+
+.heatmap-linked-line-panel-title {
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    letter-spacing: 0.02em;
 }
 
 .heatmap-inline-line-shell {

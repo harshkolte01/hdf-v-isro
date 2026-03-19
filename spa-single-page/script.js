@@ -6855,11 +6855,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
       <div class="heatmap-linked-plot" data-heatmap-linked-plot="true" hidden>
         <div class="heatmap-linked-plot-header">
           <div class="heatmap-linked-plot-title" data-heatmap-linked-title="true">
-            Plot mode: click a heatmap cell to inspect row/column profiles.
+            Plot mode: click a heatmap cell to inspect row and column profiles.
           </div>
           <div class="heatmap-linked-plot-actions">
-            <button type="button" class="line-tool-btn" data-heatmap-plot-axis="row">Row</button>
-            <button type="button" class="line-tool-btn" data-heatmap-plot-axis="col">Column</button>
             ${renderIconToolButton("Close plot", "data-heatmap-plot-close", "close")}
           </div>
         </div>
@@ -9055,6 +9053,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                     requestTargets.map((target) =>
                         getFileData(runtime.fileKey, target.path, params, {
                             cancelPrevious: true,
+                            cancelKey: `${runtime.selectionKey}|${target.path}`,
                         })
                     )
                 );
@@ -10466,6 +10465,15 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
   `;
     }
 
+    function renderLinkedLinePanelMarkup(title, config) {
+        return `
+    <div class="heatmap-linked-line-panel">
+      <div class="heatmap-linked-line-panel-title">${escapeHtml(title || "Linked profile")}</div>
+      ${renderLinkedLineShellMarkup(config)}
+    </div>
+  `;
+    }
+
     function initializeHeatmapRuntime(shell) {
         if (!shell || shell.dataset.heatmapBound === "true") {
             return;
@@ -10536,11 +10544,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
       <div class="heatmap-linked-plot" data-heatmap-linked-plot="true" hidden>
         <div class="heatmap-linked-plot-header">
           <div class="heatmap-linked-plot-title" data-heatmap-linked-title="true">
-            Plot mode: click a heatmap cell to inspect row/column profiles.
+            Plot mode: click a heatmap cell to inspect row and column profiles.
           </div>
           <div class="heatmap-linked-plot-actions">
-            <button type="button" class="line-tool-btn" data-heatmap-plot-axis="row">Row</button>
-            <button type="button" class="line-tool-btn" data-heatmap-plot-axis="col">Column</button>
             <button
               type="button"
               class="line-tool-btn line-tool-btn-icon"
@@ -10872,20 +10878,14 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             }
 
             if (!cell) {
-                linkedPlotTitle.textContent = "Plot mode: click a heatmap cell to inspect row/column profiles.";
+                linkedPlotTitle.textContent = "Plot mode: click a heatmap cell to inspect row and column profiles.";
                 return;
             }
 
-            const modeText = runtime.plotAxis === "col" ? "Column profile" : "Row profile";
-            const axisText =
-                runtime.plotAxis === "col"
-                    ? `Col ${cell.col} across Y`
-                    : `Y ${cell.displayRow} across columns`;
-            const selectedText = `Selected Y ${cell.displayRow}, Col ${cell.col}`;
-            linkedPlotTitle.textContent = `${modeText}: ${axisText} | ${selectedText} | Value ${formatCell(
+            linkedPlotTitle.textContent = `Selected Y ${cell.displayRow}, Col ${cell.col} | Value ${formatCell(
                 cell.value,
                 "auto"
-            )}`;
+            )} | Showing row and column profiles`;
         }
 
         function syncLinkedPlotLayoutState() {
@@ -11060,7 +11060,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             persistViewState();
             setMatrixStatus(
                 statusElement,
-                `Plot selected at Y ${normalized.displayRow}, Col ${normalized.col}. Loading line profile...`,
+                `Plot selected at Y ${normalized.displayRow}, Col ${normalized.col}. Loading row and column profiles...`,
                 "info"
             );
             renderHeatmap();
@@ -11090,55 +11090,98 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 return;
             }
 
-            const lineDim = runtime.plotAxis === "col" ? "col" : "row";
-            const lineIndex = lineDim === "col" ? runtime.selectedCell.col : runtime.selectedCell.row;
-            const selectedPointIndex = lineDim === "col" ? runtime.selectedCell.row : runtime.selectedCell.col;
-            const totalPoints = lineDim === "col" ? runtime.rows : runtime.cols;
-            if (!Number.isFinite(lineIndex) || totalPoints <= 0) {
+            const selectedCell = runtime.selectedCell;
+            if (
+                !Number.isFinite(selectedCell.row) ||
+                !Number.isFinite(selectedCell.col) ||
+                runtime.rows <= 0 ||
+                runtime.cols <= 0
+            ) {
                 return;
             }
-
-            const lineSelectionKey = [
-                runtime.selectionKey,
-                "heatmap-plot",
-                lineDim,
-                runtime.selectedCell.row,
-                runtime.selectedCell.col,
-            ].join("|");
+            const lineConfigs = [
+                {
+                    title: `Row profile: Y ${selectedCell.displayRow} across columns`,
+                    fileKey: runtime.fileKey,
+                    fileEtag: runtime.fileEtag,
+                    path: runtime.path,
+                    displayDims: runtime.displayDims,
+                    fixedIndices: runtime.fixedIndices,
+                    selectionKey: [
+                        runtime.selectionKey,
+                        "heatmap-plot",
+                        "row",
+                        selectedCell.row,
+                        selectedCell.col,
+                    ].join("|"),
+                    totalPoints: runtime.cols,
+                    lineIndex: selectedCell.row,
+                    lineDim: "row",
+                    selectedPointIndex: selectedCell.col,
+                    notation: lineNotation,
+                    lineGrid,
+                    lineAspect,
+                },
+                {
+                    title: `Column profile: Col ${selectedCell.col} across Y`,
+                    fileKey: runtime.fileKey,
+                    fileEtag: runtime.fileEtag,
+                    path: runtime.path,
+                    displayDims: runtime.displayDims,
+                    fixedIndices: runtime.fixedIndices,
+                    selectionKey: [
+                        runtime.selectionKey,
+                        "heatmap-plot",
+                        "col",
+                        selectedCell.row,
+                        selectedCell.col,
+                    ].join("|"),
+                    totalPoints: runtime.rows,
+                    lineIndex: selectedCell.col,
+                    lineDim: "col",
+                    selectedPointIndex: selectedCell.row,
+                    notation: lineNotation,
+                    lineGrid,
+                    lineAspect,
+                },
+            ];
 
             openLinkedPlot();
-            setLinkedPlotTitle(runtime.selectedCell);
+            setLinkedPlotTitle(selectedCell);
             syncPlotAxisButtons();
             clearLinkedLineRuntime();
 
-            linkedPlotShellHost.innerHTML = renderLinkedLineShellMarkup({
-                fileKey: runtime.fileKey,
-                fileEtag: runtime.fileEtag,
-                path: runtime.path,
-                displayDims: runtime.displayDims,
-                fixedIndices: runtime.fixedIndices,
-                selectionKey: lineSelectionKey,
-                totalPoints,
-                lineIndex,
-                lineDim,
-                selectedPointIndex,
-                notation: lineNotation,
-                lineGrid,
-                lineAspect,
-            });
+            linkedPlotShellHost.innerHTML = lineConfigs
+                .map((config) => renderLinkedLinePanelMarkup(config.title, config))
+                .join("");
 
-            const lineShell = linkedPlotShellHost.querySelector("[data-line-shell]");
-            if (!lineShell) {
-                setMatrixStatus(statusElement, "Failed to mount linked line chart panel.", "error");
+            const lineShells = Array.from(linkedPlotShellHost.querySelectorAll("[data-line-shell]"));
+            if (lineShells.length !== lineConfigs.length) {
+                setMatrixStatus(statusElement, "Failed to mount linked row and column chart panels.", "error");
                 return;
             }
-            const cleanup = initializeLineRuntime(lineShell);
-            runtime.linkedLineCleanup =
-                typeof cleanup === "function"
-                    ? cleanup
-                    : typeof lineShell.__lineRuntimeCleanup === "function"
-                        ? lineShell.__lineRuntimeCleanup
-                        : null;
+            const cleanups = [];
+            lineShells.forEach((lineShell) => {
+                const cleanup = initializeLineRuntime(lineShell);
+                const resolvedCleanup =
+                    typeof cleanup === "function"
+                        ? cleanup
+                        : typeof lineShell.__lineRuntimeCleanup === "function"
+                            ? lineShell.__lineRuntimeCleanup
+                            : null;
+                if (typeof resolvedCleanup === "function") {
+                    cleanups.push(resolvedCleanup);
+                }
+            });
+            runtime.linkedLineCleanup = () => {
+                cleanups.forEach((cleanup) => {
+                    try {
+                        cleanup();
+                    } catch (_error) {
+                        // ignore cleanup errors for detached linked charts
+                    }
+                });
+            };
             persistViewState();
             if (options.revealPanel === true) {
                 revealLinkedPlotIntoView();
@@ -12097,7 +12140,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 }
                 setMatrixStatus(
                     statusElement,
-                    "Plot mode enabled. Click a heatmap cell to show row/column line profiles.",
+                    "Plot mode enabled. Click a heatmap cell to show row and column line profiles.",
                     "info"
                 );
             } else {
