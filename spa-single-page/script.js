@@ -6,7 +6,7 @@ window.__CONFIG__ = window.__CONFIG__ || {};
 // Production deployments can inject API_BASE_URL here without changing source modules.
 // In Docker/server environments, a web server pre-processing step can replace this value at startup.
 // Must be loaded BEFORE core/config.js which reads window.__CONFIG__.API_BASE_URL.
-window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://localhost:5000";
+window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.53.240.143:5000";
 
 
 
@@ -132,7 +132,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
         return;
     }
 
-    var DEFAULT_API_BASE_URL = "http://localhost:5000";
+    var DEFAULT_API_BASE_URL = "http://152.53.240.143:5000";
 
     // Read runtime config injected by config/runtime-config.js before this script loaded
     var runtimeConfig =
@@ -2065,14 +2065,17 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
 
     // Merges a patch or the result of an updater function into state,
     // then notifies all subscribers so the UI can re-render.
-    function setState(updater) {
+    function setState(updater, options = {}) {
+        const notify = options && options.notify === false ? false : true;
         const patch = typeof updater === "function" ? updater(state) : updater;
         if (!patch || typeof patch !== "object") {
             return;
         }
 
         Object.assign(state, patch);
-        listeners.forEach((listener) => listener(state));
+        if (notify) {
+            listeners.forEach((listener) => listener(state));
+        }
     }
 
     // Registers a listener to be called after each setState; returns an unsubscribe function
@@ -3273,6 +3276,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
             normalizeDisplayDimsForShape,
             normalizeFixedIndicesForShape,
             buildNextFixedIndices,
+            buildDisplayDimsParam,
+            buildFixedIndicesParam,
+            areDisplayDimsEqual,
+            areFixedIndicesEqual,
             resolveDisplayDimsFromConfig,
             getNextAvailableDim,
         } = unpackDeps(deps);
@@ -3298,6 +3305,47 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
                     void actions.loadPreview(latest.selectedPath || fallbackPath);
                 }
             }, PREVIEW_RELOAD_DEBOUNCE_MS);
+        }
+
+        function resolveActiveHeatmapRuntimeApi(snapshot) {
+            if (typeof document === "undefined") {
+                return null;
+            }
+
+            const shell = document.querySelector("[data-heatmap-shell]");
+            if (!shell) {
+                return null;
+            }
+
+            if ((shell.dataset.heatmapFileKey || "") !== String(snapshot.selectedFile || "")) {
+                return null;
+            }
+
+            if ((shell.dataset.heatmapPath || "/") !== String(snapshot.selectedPath || "/")) {
+                return null;
+            }
+
+            const runtimeApi = shell.__heatmapRuntimeApi;
+            return runtimeApi && typeof runtimeApi.updateSelection === "function" ? runtimeApi : null;
+        }
+
+        function buildHeatmapLiveSelection(snapshot, displayDims, fixedIndices) {
+            const displayDimsParam = buildDisplayDimsParam(displayDims) || "";
+            const fixedIndicesParam = buildFixedIndicesParam(fixedIndices) || "";
+            const selectionKey = [
+                snapshot.selectedFile || "no-file",
+                snapshot.selectedPath || "/",
+                displayDimsParam || "none",
+                fixedIndicesParam || "none",
+            ].join("|");
+
+            return {
+                displayDims,
+                fixedIndices,
+                displayDimsParam,
+                fixedIndicesParam,
+                selectionKey,
+            };
         }
 
         return {
@@ -3438,7 +3486,8 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
                 actions.stageDisplayDims(nextDims, { applyImmediately: shape.length === 2 });
             },
 
-            stageFixedIndex(dim, value, size = null) {
+            stageFixedIndex(dim, value, size = null, options = {}) {
+                const interaction = options && options.interaction === "change" ? "change" : "input";
                 const snapshot = getState();
                 const shape = normalizeShape(snapshot.preview?.shape);
                 const dimIndex = toSafeInteger(dim, null);
@@ -3448,11 +3497,14 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
                 }
 
                 const config = snapshot.displayConfig || getDisplayConfigDefaults();
-                const stagedDims =
-                    normalizeDisplayDimsForShape(config.stagedDisplayDims, shape) ||
+                const appliedDims =
                     normalizeDisplayDimsForShape(config.displayDims, shape) ||
+                    normalizeDisplayDimsForShape(snapshot.preview?.display_dims, shape) ||
                     getDefaultDisplayDims(shape) ||
                     [];
+                const stagedDims =
+                    normalizeDisplayDimsForShape(config.stagedDisplayDims, shape) ||
+                    appliedDims;
 
                 if (stagedDims.includes(dimIndex)) {
                     return;
@@ -3461,6 +3513,58 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
                 const sourceSize = Math.max(0, toSafeInteger(size, shape[dimIndex]));
                 const max = Math.max(0, sourceSize - 1);
                 const normalizedValue = Math.max(0, Math.min(max, toSafeInteger(value, 0)));
+                const canLiveUpdateHeatmap =
+                    snapshot.route === "viewer" &&
+                    snapshot.viewMode === "display" &&
+                    snapshot.selectedNodeType === "dataset" &&
+                    snapshot.displayTab === "heatmap" &&
+                    snapshot.heatmapFullEnabled === true &&
+                    Array.isArray(appliedDims) &&
+                    appliedDims.length === 2 &&
+                    areDisplayDimsEqual(stagedDims, appliedDims);
+
+                const heatmapRuntimeApi = canLiveUpdateHeatmap ? resolveActiveHeatmapRuntimeApi(snapshot) : null;
+                if (heatmapRuntimeApi) {
+                    const currentAppliedFixed = buildNextFixedIndices(
+                        normalizeFixedIndicesForShape(config.fixedIndices, shape, appliedDims),
+                        appliedDims,
+                        shape
+                    );
+                    const nextFixedIndices = buildNextFixedIndices(
+                        {
+                            ...currentAppliedFixed,
+                            [dimIndex]: normalizedValue,
+                        },
+                        appliedDims,
+                        shape
+                    );
+
+                    setState((prev) => ({
+                        displayConfig: {
+                            ...(prev.displayConfig || getDisplayConfigDefaults()),
+                            displayDims: appliedDims,
+                            fixedIndices: nextFixedIndices,
+                            stagedDisplayDims: appliedDims,
+                            stagedFixedIndices: nextFixedIndices,
+                        },
+                    }), { notify: false });
+
+                    if (!areFixedIndicesEqual(nextFixedIndices, currentAppliedFixed)) {
+                        const nextSelection = buildHeatmapLiveSelection(snapshot, appliedDims, nextFixedIndices);
+                        heatmapRuntimeApi.updateSelection(
+                            {
+                                displayDims: nextSelection.displayDimsParam,
+                                fixedIndices: nextSelection.fixedIndicesParam,
+                                selectionKey: nextSelection.selectionKey,
+                            },
+                            {
+                                immediate: interaction === "change",
+                                preserveViewState: true,
+                            }
+                        );
+                    }
+                    return;
+                }
 
                 setState((prev) => {
                     const prevConfig = prev.displayConfig || getDisplayConfigDefaults();
@@ -3500,6 +3604,22 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
                     nextDims || [],
                     shape
                 );
+                const currentDims =
+                    normalizeDisplayDimsForShape(config.displayDims, shape) ||
+                    normalizeDisplayDimsForShape(snapshot.preview?.display_dims, shape) ||
+                    getDefaultDisplayDims(shape);
+                const currentFixedIndices = buildNextFixedIndices(
+                    normalizeFixedIndicesForShape(config.fixedIndices, shape, currentDims || []),
+                    currentDims || [],
+                    shape
+                );
+
+                if (
+                    areDisplayDimsEqual(nextDims, currentDims) &&
+                    areFixedIndicesEqual(nextFixedIndices, currentFixedIndices)
+                ) {
+                    return;
+                }
 
                 setState((prev) => ({
                     displayConfig: {
@@ -9459,6 +9579,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
     const HEATMAP_MIN_ZOOM = 1;                 // 1x = fit-to-window
     const HEATMAP_MAX_ZOOM = 8;                 // maximum zoom magnification
     const HEATMAP_PAN_START_ZOOM = 1.2;         // panning is only active above this zoom level
+    const HEATMAP_SELECTION_UPDATE_DEBOUNCE_MS = 140;
     const HEATMAP_SELECTION_CACHE_LIMIT = 12;   // max cached heatmap datasets before oldest is evicted
     const HEATMAP_SELECTION_DATA_CACHE = new Map();  // raw data cache keyed by selection string
     const HEATMAP_SELECTION_VIEW_CACHE = new Map();  // rendered ImageData cache keyed by selection+colormap
@@ -10053,7 +10174,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
             destroyed: false,
             loadedPhase: "preview",
             fullscreenActive: false,
+            loadSequence: 0,
         };
+        let pendingSelectionUpdate = null;
+        let selectionUpdateTimer = null;
 
         if (consumeHeatmapFullscreenRestore(selectionKey)) {
             runtime.fullscreenActive = true;
@@ -10923,10 +11047,24 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
             renderHeatmap();
         }
 
-        async function fetchHeatmapAtSize(maxSize, loadingMessage) {
+        async function fetchHeatmapAtSize(maxSize, loadingMessage, options = {}) {
             if (runtime.destroyed) {
                 return { loaded: false };
             }
+
+            const preserveViewState = options && options.preserveViewState === true;
+            const loadToken = Number.isFinite(Number(options?.loadToken)) ? Number(options.loadToken) : runtime.loadSequence;
+            const preservedView = preserveViewState
+                ? {
+                    zoom: runtime.zoom,
+                    panX: runtime.panX,
+                    panY: runtime.panY,
+                    panEnabled: runtime.panEnabled === true,
+                    plottingEnabled: runtime.plottingEnabled === true,
+                    plotAxis: runtime.plotAxis === "col" ? "col" : "row",
+                    linkedPlotOpen: runtime.linkedPlotOpen === true,
+                }
+                : null;
 
             if (loadingMessage) {
                 setMatrixStatus(statusElement, loadingMessage, "info");
@@ -10958,7 +11096,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
                     cancelKey,
                 });
 
-                if (runtime.destroyed) {
+                if (runtime.destroyed || loadToken !== runtime.loadSequence) {
                     return { loaded: false };
                 }
 
@@ -10986,9 +11124,19 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
                 runtime.min = min;
                 runtime.max = max;
                 runtime.bitmap = bitmap;
-                runtime.zoom = HEATMAP_MIN_ZOOM;
-                runtime.panX = 0;
-                runtime.panY = 0;
+                if (preservedView) {
+                    runtime.zoom = clamp(preservedView.zoom || HEATMAP_MIN_ZOOM, HEATMAP_MIN_ZOOM, HEATMAP_MAX_ZOOM);
+                    runtime.panX = Number(preservedView.panX) || 0;
+                    runtime.panY = Number(preservedView.panY) || 0;
+                    runtime.panEnabled = preservedView.panEnabled === true;
+                    runtime.plottingEnabled = preservedView.plottingEnabled === true;
+                    runtime.plotAxis = preservedView.plotAxis === "col" ? "col" : "row";
+                    runtime.linkedPlotOpen = preservedView.linkedPlotOpen === true && runtime.selectedCell !== null;
+                } else {
+                    runtime.zoom = HEATMAP_MIN_ZOOM;
+                    runtime.panX = 0;
+                    runtime.panY = 0;
+                }
                 runtime.maxSizeClamped = response?.max_size_clamped === true;
                 runtime.effectiveMaxSize = Number(response?.effective_max_size) || requestedMaxSize;
                 runtime.loadedPhase = requestedMaxSize >= HEATMAP_MAX_SIZE ? "highres" : "preview";
@@ -11025,6 +11173,12 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
                 hideTooltip();
                 updateLabels();
                 renderHeatmap();
+                if (preservedView) {
+                    const clampedPan = clampPanForZoom(runtime.panX, runtime.panY, runtime.zoom);
+                    runtime.panX = clampedPan.x;
+                    runtime.panY = clampedPan.y;
+                    renderHeatmap();
+                }
                 persistViewState();
                 if (runtime.selectedCell && linkedPlotPanel && !linkedPlotPanel.hidden) {
                     renderLinkedPlotLine();
@@ -11046,19 +11200,30 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
             }
         }
 
-        async function loadHighResHeatmap() {
+        async function loadHighResHeatmap(options = {}) {
+            const preserveViewState = options && options.preserveViewState === true;
+            const loadToken = ++runtime.loadSequence;
             // Progressive loading: fast preview first (256), then full resolution (1024)
             const PREVIEW_SIZE = 256;
-            const previewResult = await fetchHeatmapAtSize(PREVIEW_SIZE, "Loading heatmap preview...");
-            if (runtime.destroyed) return;
+            const previewResult = await fetchHeatmapAtSize(PREVIEW_SIZE, "Loading heatmap preview...", {
+                preserveViewState,
+                loadToken,
+            });
+            if (runtime.destroyed || loadToken !== runtime.loadSequence) return;
             if (previewResult.loaded && HEATMAP_MAX_SIZE > PREVIEW_SIZE) {
                 // Small delay so the user sees the preview before the full load starts
                 await new Promise((r) => setTimeout(r, 50));
-                if (runtime.destroyed) return;
-                await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...");
+                if (runtime.destroyed || loadToken !== runtime.loadSequence) return;
+                await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
+                    preserveViewState,
+                    loadToken,
+                });
             } else if (!previewResult.loaded) {
                 // Fallback: try full size directly
-                await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading high-res heatmap...");
+                await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading high-res heatmap...", {
+                    preserveViewState,
+                    loadToken,
+                });
             }
         }
 
@@ -11155,6 +11320,99 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
             });
             runtime.activeCancelKeys.clear();
         }
+
+        function clearPendingSelectionUpdate() {
+            if (selectionUpdateTimer !== null) {
+                clearTimeout(selectionUpdateTimer);
+                selectionUpdateTimer = null;
+            }
+            pendingSelectionUpdate = null;
+        }
+
+        async function applySelectionUpdate(nextSelection, options = {}) {
+            if (runtime.destroyed || !nextSelection || typeof nextSelection !== "object") {
+                return;
+            }
+
+            const nextDisplayDims =
+                typeof nextSelection.displayDims === "string" ? nextSelection.displayDims : runtime.displayDims;
+            const nextFixedIndices =
+                typeof nextSelection.fixedIndices === "string" ? nextSelection.fixedIndices : runtime.fixedIndices;
+            const nextSelectionKey = String(
+                nextSelection.selectionKey ||
+                buildHeatmapSelectionKey(runtime.fileKey, runtime.path, nextDisplayDims, nextFixedIndices)
+            );
+            const dimsChanged = nextDisplayDims !== runtime.displayDims;
+            const fixedChanged = nextFixedIndices !== runtime.fixedIndices;
+            const selectionChanged = nextSelectionKey !== runtime.selectionKey;
+            if (!dimsChanged && !fixedChanged && !selectionChanged) {
+                return;
+            }
+
+            const preserveViewState = options.preserveViewState === true && !dimsChanged;
+            persistViewState();
+            runtime.loadSequence += 1;
+            cancelInFlightRequests();
+            runtime.displayDims = nextDisplayDims || "";
+            runtime.fixedIndices = nextFixedIndices || "";
+            runtime.selectionKey = nextSelectionKey;
+            runtime.cacheKey = `${runtime.selectionKey}|${runtime.fileEtag || "no-etag"}`;
+            shell.dataset.heatmapDisplayDims = runtime.displayDims;
+            shell.dataset.heatmapFixedIndices = runtime.fixedIndices;
+            shell.dataset.heatmapSelectionKey = runtime.selectionKey;
+            runtime.hover = null;
+            runtime.hoverDisplayRow = null;
+            hideTooltip();
+
+            const restoredFromCache = restoreCachedHeatmapData();
+            if (restoredFromCache) {
+                if (runtime.loadedPhase !== "highres") {
+                    const loadToken = runtime.loadSequence;
+                    void fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
+                        preserveViewState,
+                        loadToken,
+                    });
+                }
+                return;
+            }
+
+            setMatrixStatus(statusElement, "Updating heatmap slice...", "info");
+            await loadHighResHeatmap({ preserveViewState });
+        }
+
+        function queueSelectionUpdate(nextSelection, options = {}) {
+            pendingSelectionUpdate = {
+                nextSelection: nextSelection && typeof nextSelection === "object" ? { ...nextSelection } : {},
+                options: { ...options },
+            };
+
+            if (options && options.immediate === true) {
+                const immediateUpdate = pendingSelectionUpdate;
+                clearPendingSelectionUpdate();
+                void applySelectionUpdate(immediateUpdate.nextSelection, immediateUpdate.options);
+                return;
+            }
+
+            if (selectionUpdateTimer !== null) {
+                clearTimeout(selectionUpdateTimer);
+            }
+
+            selectionUpdateTimer = setTimeout(() => {
+                selectionUpdateTimer = null;
+                const queuedUpdate = pendingSelectionUpdate;
+                pendingSelectionUpdate = null;
+                if (!queuedUpdate) {
+                    return;
+                }
+                void applySelectionUpdate(queuedUpdate.nextSelection, queuedUpdate.options);
+            }, HEATMAP_SELECTION_UPDATE_DEBOUNCE_MS);
+        }
+
+        shell.__heatmapRuntimeApi = {
+            updateSelection(nextSelection, options = {}) {
+                queueSelectionUpdate(nextSelection, options);
+            },
+        };
 
         function onWheel(event) {
             event.preventDefault();
@@ -11473,6 +11731,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
             if (shell.__exportApi) {
                 delete shell.__exportApi;
             }
+            if (shell.__heatmapRuntimeApi) {
+                delete shell.__heatmapRuntimeApi;
+            }
+            clearPendingSelectionUpdate();
             cancelInFlightRequests();
             closeLinkedPlot();
             canvas.removeEventListener("wheel", onWheel);
@@ -11560,6 +11822,42 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
 
     // Single delegated click handler covering all panel interaction types (sidebar, axis, dim, matrix, line, compare, export, etc.)
     function bindRuntimeDelegatedEvents(root) {
+        function syncFixedIndexPeerInputs(control, rawValue) {
+            if (!(control instanceof Element)) {
+                return rawValue;
+            }
+
+            var dimSlider = control.closest(".dim-slider");
+            if (!dimSlider) {
+                return rawValue;
+            }
+
+            var min = Number(control.getAttribute("min"));
+            var max = Number(control.getAttribute("max"));
+            var normalizedValue = Number(rawValue);
+            if (!Number.isFinite(normalizedValue)) {
+                normalizedValue = Number(control.value);
+            }
+            if (Number.isFinite(min)) {
+                normalizedValue = Math.max(min, normalizedValue);
+            }
+            if (Number.isFinite(max)) {
+                normalizedValue = Math.min(max, normalizedValue);
+            }
+            normalizedValue = Math.trunc(normalizedValue);
+
+            dimSlider.querySelectorAll("[data-fixed-index-range], [data-fixed-index-number]").forEach(function (input) {
+                if (!(input instanceof HTMLInputElement)) {
+                    return;
+                }
+                if (input.value !== String(normalizedValue)) {
+                    input.value = String(normalizedValue);
+                }
+            });
+
+            return normalizedValue;
+        }
+
         var onClick = function (event) {
             var target = event.target;
             if (!(target instanceof Element)) {
@@ -11683,7 +11981,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
                 if (typeof runtimeActions.stageFixedIndex === "function") {
                     var numDim = Number(fixedNumber.dataset.fixedDim);
                     var numSize = Number(fixedNumber.dataset.fixedSize);
-                    runtimeActions.stageFixedIndex(numDim, Number(fixedNumber.value), numSize);
+                    var normalizedNumberValue = syncFixedIndexPeerInputs(fixedNumber, fixedNumber.value);
+                    runtimeActions.stageFixedIndex(numDim, normalizedNumberValue, numSize, {
+                        interaction: "change",
+                    });
                 }
             }
         };
@@ -11699,7 +12000,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
                 if (typeof runtimeActions.stageFixedIndex === "function") {
                     var dim = Number(fixedRange.dataset.fixedDim);
                     var size = Number(fixedRange.dataset.fixedSize);
-                    runtimeActions.stageFixedIndex(dim, Number(fixedRange.value), size);
+                    var normalizedRangeValue = syncFixedIndexPeerInputs(fixedRange, fixedRange.value);
+                    runtimeActions.stageFixedIndex(dim, normalizedRangeValue, size, {
+                        interaction: "input",
+                    });
                 }
             }
         };
