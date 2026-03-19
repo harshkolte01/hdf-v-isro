@@ -5774,8 +5774,8 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://local
     }
     var moduleState = ensurePath(ns, "components.viewerPanel.render.dimensionControls");
 
-    // Feature flag: set to true to show per-dimension index sliders in the UI (currently disabled pending UX review)
-    const SHOW_FIXED_INDEX_CONTROLS = false;
+    // Feature flag: exposes per-dimension index sliders for non-displayed axes in 3D+ dataset views.
+    const SHOW_FIXED_INDEX_CONTROLS = true;
 
     // Entry point: for ndim < 2 there are no selectable axes, so nothing is rendered
     function renderDimensionControls(state, preview) {
