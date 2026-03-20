@@ -1279,6 +1279,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             dtype: asString(raw.dtype),
             shape: normalizeShape(raw.shape),
             ndim: asNumber(raw.ndim, 0),
+            dimension_labels: asArray(raw.dimension_labels).map(asNullableString),
             display_dims: raw.display_dims === null ? null : normalizeShape(raw.display_dims),
             fixed_indices: asObject(raw.fixed_indices),
             mode: asString(raw.mode, "auto"),
@@ -6208,13 +6209,23 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const appliedDims = controls.appliedDisplayDims || getDefaultDisplayDims(shape);
         const stagedDims = controls.stagedDisplayDims || appliedDims || [0, 1];
         const stagedFixed = controls.stagedFixedIndices || {};
+        const dimensionLabels = Array.isArray(preview?.dimension_labels) ? preview.dimension_labels : [];
 
         if (!appliedDims || !stagedDims) {
             return "";
         }
 
-        const dimLabel = `D${appliedDims[0]} x D${appliedDims[1]}`;
-        const pendingLabel = `D${stagedDims[0]} x D${stagedDims[1]}`;
+        function getDimDisplayName(dim) {
+            const label = typeof dimensionLabels[dim] === "string" ? dimensionLabels[dim].trim() : "";
+            return label || `D${dim}`;
+        }
+
+        function formatDimPair(dims) {
+            return `${getDimDisplayName(dims[0])} x ${getDimDisplayName(dims[1])}`;
+        }
+
+        const dimLabel = formatDimPair(appliedDims);
+        const pendingLabel = formatDimPair(stagedDims);
 
         if (ndim === 2) {
             const xDim = stagedDims[1];
@@ -6227,12 +6238,12 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
           <span>Dimensions</span>
-          <span class="dim-value-inline">${dimLabel}</span>
+          <span class="dim-value-inline">${escapeHtml(dimLabel)}</span>
         </button>
         <div class="sidebar-body">
         <div class="dimension-summary">
           <span class="dim-label">Display dims</span>
-          <span class="dim-value">${dimLabel}</span>
+          <span class="dim-value">${escapeHtml(dimLabel)}</span>
         </div>
         <div class="axis-toggle">
           <div class="axis-row">
@@ -6247,7 +6258,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                       data-axis-change="x"
                       data-axis-dim="${dim}"
                     >
-                      D${dim}
+                      ${escapeHtml(getDimDisplayName(dim))}
                     </button>
                   `
                     )
@@ -6266,7 +6277,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                       data-axis-change="y"
                       data-axis-dim="${dim}"
                     >
-                      D${dim}
+                      ${escapeHtml(getDimDisplayName(dim))}
                     </button>
                   `
                     )
@@ -6299,7 +6310,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
                     return `
                 <div class="dim-slider">
-                  <label>Dim ${dim} index</label>
+                  <label>${escapeHtml(getDimDisplayName(dim))} index</label>
                   <div class="slider-row">
                     <input
                       type="range"
@@ -6335,14 +6346,14 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
           <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
         <span>Dimensions</span>
-        <span class="dim-value-inline">${dimLabel}</span>
+        <span class="dim-value-inline">${escapeHtml(dimLabel)}</span>
       </button>
       <div class="sidebar-body">
       <div class="dimension-summary">
         <span class="dim-label">Display dims</span>
-        <span class="dim-value">${dimLabel}</span>
+        <span class="dim-value">${escapeHtml(dimLabel)}</span>
         ${controls.hasPendingChanges
-                ? `<span class="dim-pending">Pending: ${pendingLabel} (click Set)</span>`
+                ? `<span class="dim-pending">Pending: ${escapeHtml(pendingLabel)} (click Set)</span>`
                 : ""
             }
       </div>
@@ -6355,7 +6366,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 .map(
                     (option) => `
                   <option value="${option.idx}" ${stagedDims[0] === option.idx ? "selected" : ""}>
-                    D${option.idx} (size ${option.size})
+                    ${escapeHtml(getDimDisplayName(option.idx))} (size ${option.size})
                   </option>
                 `
                 )
@@ -6370,7 +6381,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 .map(
                     (option) => `
                   <option value="${option.idx}" ${safeYDim === option.idx ? "selected" : ""}>
-                    D${option.idx} (size ${option.size})
+                    ${escapeHtml(getDimDisplayName(option.idx))} (size ${option.size})
                   </option>
                 `
                 )

@@ -58,6 +58,73 @@ class HDF5Reader:
             logger.error(f"Error reading HDF5 dataset info from '{key}' at '{path}': {e}")
             raise
 
+    def _coerce_dimension_label(self, value: Any) -> Optional[str]:
+        """Convert HDF5 label metadata into a trimmed string or None."""
+        if value is None:
+            return None
+
+        if isinstance(value, (bytes, np.bytes_)):
+            value = bytes(value).decode('utf-8', errors='ignore')
+        elif hasattr(value, 'item') and not isinstance(value, str):
+            try:
+                value = value.item()
+            except Exception:
+                pass
+
+        text = str(value).strip()
+        return text or None
+
+    def _get_attribute_dimension_labels(self, dataset: h5py.Dataset) -> List[Optional[str]]:
+        """Read dataset-level DIMENSION_LABELS attribute when present."""
+        raw = dataset.attrs.get('DIMENSION_LABELS')
+        if raw is None:
+            return []
+
+        if hasattr(raw, 'tolist'):
+            raw = raw.tolist()
+
+        if not isinstance(raw, (list, tuple)):
+            raw = [raw]
+
+        labels: List[Optional[str]] = []
+        for dim in range(dataset.ndim):
+            item = raw[dim] if dim < len(raw) else None
+            labels.append(self._coerce_dimension_label(item))
+        return labels
+
+    def _get_dimension_scale_label(self, dataset: h5py.Dataset, dim: int) -> Optional[str]:
+        """Use the first attached dimension scale name when no explicit label exists."""
+        try:
+            for scale in dataset.dims[dim]:
+                scale_name = self._coerce_dimension_label(getattr(scale, 'name', None))
+                if scale_name:
+                    return scale_name.rsplit('/', 1)[-1]
+        except Exception:
+            return None
+        return None
+
+    def _get_dimension_labels(self, dataset: h5py.Dataset) -> List[Optional[str]]:
+        """Resolve one display label per dimension, preserving missing entries as None."""
+        labels_from_attrs = self._get_attribute_dimension_labels(dataset)
+        labels: List[Optional[str]] = []
+
+        for dim in range(dataset.ndim):
+            label = None
+            try:
+                label = self._coerce_dimension_label(dataset.dims[dim].label)
+            except Exception:
+                label = None
+
+            if not label and dim < len(labels_from_attrs):
+                label = labels_from_attrs[dim]
+
+            if not label:
+                label = self._get_dimension_scale_label(dataset, dim)
+
+            labels.append(label)
+
+        return labels
+
     def normalize_preview_axes(
         self,
         shape: List[int],
@@ -119,6 +186,7 @@ class HDF5Reader:
                     ndim = obj.ndim
                     dtype = obj.dtype
                     dtype_str = str(dtype)
+                    dimension_labels = self._get_dimension_labels(obj)
 
                     preview_type = '1d' if ndim == 1 else '2d' if ndim == 2 else 'nd'
                     numeric = self._is_numeric_dtype(dtype)
@@ -206,6 +274,7 @@ class HDF5Reader:
                         'dtype': dtype_str,
                         'shape': shape,
                         'ndim': ndim,
+                        'dimension_labels': dimension_labels,
                         'preview_type': preview_type,
                         'mode': requested_mode,
                         'detail': detail_level,

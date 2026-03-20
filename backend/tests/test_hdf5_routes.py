@@ -458,6 +458,37 @@ class Hdf5RoutesTestCase(unittest.TestCase):
         self.assertEqual(kwargs['detail'], 'fast')
         self.assertFalse(kwargs['include_stats'])
 
+    def test_preview_returns_dimension_labels(self):
+        reader = Mock()
+        reader.get_preview.return_value = {
+            'key': 'sample.h5',
+            'path': '/array_3d',
+            'dtype': 'float32',
+            'shape': [2, 3, 4],
+            'ndim': 3,
+            'dimension_labels': ['time', 'height', 'width'],
+            'preview_type': 'nd',
+            'mode': 'auto',
+            'detail': 'full',
+            'display_dims': [1, 2],
+            'fixed_indices': {0: 1},
+            'stats': {'supported': True},
+            'table': {'kind': '2d', 'data': []},
+            'plot': {'type': 'heatmap', 'data': []},
+            'profile': None,
+            'limits': {}
+        }
+
+        with patch('src.routes.hdf5.get_hdf5_reader', return_value=reader), \
+             patch('src.routes.hdf5.get_dataset_cache', return_value=_MemoryCache()), \
+             patch('src.routes.hdf5.get_hdf5_cache', return_value=_MemoryCache()):
+            response = self.client.get('/files/sample.h5/preview?path=/array_3d')
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['success'])
+        self.assertEqual(payload['dimension_labels'], ['time', 'height', 'width'])
+
     def test_preview_rejects_invalid_detail(self):
         response = self.client.get('/files/sample.h5/preview?path=/array_1d&detail=ultra')
         self.assertEqual(response.status_code, 400)
