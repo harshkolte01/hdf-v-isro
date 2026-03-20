@@ -2034,6 +2034,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             fixedIndices: {},
             stagedDisplayDims: null,
             stagedFixedIndices: {},
+            playingFixedDim: null,
         },
 
         // --- Cache response snapshots (informational only, not used for rendering) ---
@@ -2184,6 +2185,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             fixedIndices: {},
             stagedDisplayDims: null,
             stagedFixedIndices: {},
+            playingFixedDim: null,
         };
     }
 
@@ -3080,7 +3082,19 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                     ...(nextTab !== "table" ? { matrixFullEnabled: false } : {}),
                     ...(nextTab !== "line" ? { lineFullEnabled: false } : {}),
                     ...(!nextTabIsHeatmapLike ? { heatmapFullEnabled: false } : {}),
+                    ...(!nextTabIsHeatmapLike
+                        ? {
+                            displayConfig: {
+                                ...(snapshot.displayConfig || getDisplayConfigDefaults()),
+                                playingFixedDim: null,
+                            },
+                        }
+                        : {}),
                 });
+
+                if (!nextTabIsHeatmapLike && typeof actions.stopFixedIndexPlayback === "function") {
+                    actions.stopFixedIndexPlayback();
+                }
 
                 if (!tabChanged) {
                     return;
@@ -3299,7 +3313,11 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         } = unpackDeps(deps);
         // Debounce delay prevents a new preview fetch on every keystroke in the dimension pickers
         const PREVIEW_RELOAD_DEBOUNCE_MS = 140;
+        const FIXED_INDEX_PLAYBACK_INTERVAL_MS = 400;
         let previewReloadTimer = null;
+        let fixedIndexPlaybackTimer = null;
+        let fixedIndexPlaybackDim = null;
+        let fixedIndexPlaybackRunId = 0;
 
         // Clears any pending debounce timer and schedules a fresh preview reload after the quiet period
         function schedulePreviewReload(fallbackPath) {
@@ -3341,6 +3359,240 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
             const runtimeApi = shell.__heatmapRuntimeApi;
             return runtimeApi && typeof runtimeApi.updateSelection === "function" ? runtimeApi : null;
+        }
+
+        function clearFixedIndexPlaybackTimer() {
+            if (fixedIndexPlaybackTimer !== null) {
+                clearTimeout(fixedIndexPlaybackTimer);
+                fixedIndexPlaybackTimer = null;
+            }
+        }
+
+        function setPlayingFixedDim(dimIndex) {
+            setState((prev) => ({
+                displayConfig: {
+                    ...(prev.displayConfig || getDisplayConfigDefaults()),
+                    playingFixedDim: dimIndex,
+                },
+            }), { notify: false });
+        }
+
+        function formatFixedIndexStatus(value, size) {
+            const safeSize = Math.max(0, toSafeInteger(size, 0));
+            const max = Math.max(0, safeSize - 1);
+            const current = Math.max(0, Math.min(max, toSafeInteger(value, 0)));
+            return `Index ${current} / ${max}`;
+        }
+
+        function syncFixedIndexControlDom(dim, value = null, size = null) {
+            if (typeof document === "undefined") {
+                return;
+            }
+
+            const dimIndex = toSafeInteger(dim, null);
+            if (dimIndex === null || dimIndex < 0) {
+                return;
+            }
+
+            const controls = Array.from(document.querySelectorAll(`[data-fixed-index-control="${dimIndex}"]`))
+                .filter((control) => control instanceof Element);
+            if (controls.length === 0) {
+                return;
+            }
+
+            controls.forEach((control) => {
+                const playbackAvailable =
+                    control.getAttribute("data-fixed-playback-available") === "1" ||
+                    control.querySelector('[data-fixed-playback-available="1"]') !== null;
+
+                let resolvedMax = null;
+                control.querySelectorAll(`[data-fixed-dim="${dimIndex}"]`).forEach((input) => {
+                    if (!(input instanceof HTMLInputElement)) {
+                        return;
+                    }
+
+                    const inputMax = Number(input.getAttribute("max"));
+                    if (Number.isFinite(inputMax)) {
+                        resolvedMax = resolvedMax === null ? inputMax : Math.max(resolvedMax, inputMax);
+                    }
+                });
+
+                const inferredSize = resolvedMax === null ? 0 : resolvedMax + 1;
+                const safeSize = Math.max(0, toSafeInteger(size, inferredSize));
+                const max = Math.max(0, safeSize - 1);
+                const nextValue = Math.max(0, Math.min(max, toSafeInteger(value, 0)));
+
+                control.querySelectorAll(`[data-fixed-dim="${dimIndex}"]`).forEach((input) => {
+                    if (!(input instanceof HTMLInputElement)) {
+                        return;
+                    }
+                    if (input.value !== String(nextValue)) {
+                        input.value = String(nextValue);
+                    }
+                });
+
+                const status = control.querySelector(`[data-fixed-index-status="true"][data-fixed-status-dim="${dimIndex}"]`);
+                if (status) {
+                    status.textContent = formatFixedIndexStatus(nextValue, safeSize);
+                }
+
+                const activeDim = toSafeInteger(getState().displayConfig?.playingFixedDim, null);
+                const isPlaying = activeDim === dimIndex;
+                const playButton = control.querySelector(`[data-fixed-index-play-action="start"][data-fixed-dim="${dimIndex}"]`);
+                const pauseButton = control.querySelector(`[data-fixed-index-play-action="stop"][data-fixed-dim="${dimIndex}"]`);
+                const canUsePlayback = playbackAvailable && max >= 1;
+
+                if (playButton instanceof HTMLButtonElement) {
+                    playButton.disabled = !canUsePlayback;
+                    playButton.classList.toggle("active", !isPlaying && canUsePlayback);
+                }
+
+                if (pauseButton instanceof HTMLButtonElement) {
+                    pauseButton.disabled = !canUsePlayback;
+                    pauseButton.classList.toggle("active", isPlaying && canUsePlayback);
+                }
+            });
+        }
+
+        function syncAllFixedIndexPlaybackDom() {
+            if (typeof document === "undefined") {
+                return;
+            }
+
+            const syncedDims = new Set();
+            document.querySelectorAll("[data-fixed-index-control]").forEach((control) => {
+                if (!(control instanceof Element)) {
+                    return;
+                }
+                const dimIndex = toSafeInteger(control.getAttribute("data-fixed-index-control"), null);
+                if (dimIndex === null || dimIndex < 0 || syncedDims.has(dimIndex)) {
+                    return;
+                }
+                syncedDims.add(dimIndex);
+                const valueInput = control.querySelector(`[data-fixed-index-number="true"][data-fixed-dim="${dimIndex}"]`)
+                    || control.querySelector(`[data-fixed-index-range="true"][data-fixed-dim="${dimIndex}"]`);
+                const sizeValue = valueInput instanceof HTMLInputElement
+                    ? Number(valueInput.getAttribute("data-fixed-size"))
+                    : null;
+                const currentValue = valueInput instanceof HTMLInputElement ? valueInput.value : 0;
+                syncFixedIndexControlDom(dimIndex, currentValue, sizeValue);
+            });
+        }
+
+        function resolveFixedIndexPlaybackContext(snapshot, requestedDim = null) {
+            const activeTab = snapshot.displayTab;
+            if (
+                snapshot.route !== "viewer" ||
+                snapshot.viewMode !== "display" ||
+                snapshot.selectedNodeType !== "dataset" ||
+                (activeTab !== "heatmap" && activeTab !== "image") ||
+                snapshot.heatmapFullEnabled !== true
+            ) {
+                return null;
+            }
+
+            const runtimeApi = resolveActiveHeatmapRuntimeApi(snapshot);
+            if (!runtimeApi) {
+                return null;
+            }
+
+            const shape = normalizeShape(snapshot.preview?.shape);
+            if (shape.length < 3) {
+                return null;
+            }
+
+            const config = snapshot.displayConfig || getDisplayConfigDefaults();
+            const appliedDims =
+                normalizeDisplayDimsForShape(config.displayDims, shape) ||
+                normalizeDisplayDimsForShape(snapshot.preview?.display_dims, shape) ||
+                getDefaultDisplayDims(shape);
+
+            if (!Array.isArray(appliedDims) || appliedDims.length !== 2) {
+                return null;
+            }
+
+            const dimIndex = toSafeInteger(requestedDim !== null ? requestedDim : config.playingFixedDim, null);
+            if (dimIndex === null || dimIndex < 0 || dimIndex >= shape.length || appliedDims.includes(dimIndex)) {
+                return null;
+            }
+
+            const size = Math.max(0, toSafeInteger(shape[dimIndex], 0));
+            if (size <= 1) {
+                return null;
+            }
+
+            const fixedIndices = buildNextFixedIndices(
+                normalizeFixedIndicesForShape(config.fixedIndices, shape, appliedDims),
+                appliedDims,
+                shape
+            );
+
+            return {
+                dimIndex,
+                size,
+                fixedIndices,
+                runtimeApi,
+            };
+        }
+
+        function stopFixedIndexPlaybackInternal() {
+            clearFixedIndexPlaybackTimer();
+            fixedIndexPlaybackRunId += 1;
+            fixedIndexPlaybackDim = null;
+            setPlayingFixedDim(null);
+            syncAllFixedIndexPlaybackDom();
+        }
+
+        function scheduleNextFixedIndexPlayback(runId, delay = FIXED_INDEX_PLAYBACK_INTERVAL_MS) {
+            clearFixedIndexPlaybackTimer();
+            fixedIndexPlaybackTimer = setTimeout(() => {
+                fixedIndexPlaybackTimer = null;
+                void advanceFixedIndexPlayback(runId);
+            }, Math.max(0, delay));
+        }
+
+        async function advanceFixedIndexPlayback(runId) {
+            if (runId !== fixedIndexPlaybackRunId) {
+                return;
+            }
+
+            const snapshot = getState();
+            const activeDim = toSafeInteger(snapshot.displayConfig?.playingFixedDim, null);
+            if (fixedIndexPlaybackDim === null || activeDim !== fixedIndexPlaybackDim) {
+                stopFixedIndexPlaybackInternal();
+                return;
+            }
+
+            const context = resolveFixedIndexPlaybackContext(snapshot, fixedIndexPlaybackDim);
+            if (!context) {
+                stopFixedIndexPlaybackInternal();
+                return;
+            }
+
+            const currentValue = Number.isFinite(context.fixedIndices[context.dimIndex])
+                ? context.fixedIndices[context.dimIndex]
+                : 0;
+            const nextValue = currentValue >= context.size - 1 ? 0 : currentValue + 1;
+            let loaded = true;
+            try {
+                loaded = await Promise.resolve(actions.stageFixedIndex(context.dimIndex, nextValue, context.size, {
+                    interaction: "change",
+                    forceFullLoad: true,
+                }));
+            } catch (_error) {
+                loaded = false;
+            }
+
+            if (runId !== fixedIndexPlaybackRunId) {
+                return;
+            }
+
+            if (loaded === false) {
+                stopFixedIndexPlaybackInternal();
+                return;
+            }
+
+            scheduleNextFixedIndexPlayback(runId);
         }
 
         function buildHeatmapLiveSelection(snapshot, displayDims, fixedIndices) {
@@ -3395,6 +3647,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
                 if (!normalizedDims) {
                     return;
+                }
+
+                if (fixedIndexPlaybackDim !== null) {
+                    stopFixedIndexPlaybackInternal();
                 }
 
                 const currentConfig = snapshot.displayConfig || getDisplayConfigDefaults();
@@ -3502,6 +3758,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
             stageFixedIndex(dim, value, size = null, options = {}) {
                 const interaction = options && options.interaction === "change" ? "change" : "input";
+                const forceFullLoad = options && options.forceFullLoad === true;
                 const snapshot = getState();
                 const shape = normalizeShape(snapshot.preview?.shape);
                 const dimIndex = toSafeInteger(dim, null);
@@ -3563,9 +3820,11 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                         },
                     }), { notify: false });
 
+                    let updatePromise = Promise.resolve(true);
                     if (!areFixedIndicesEqual(nextFixedIndices, currentAppliedFixed)) {
                         const nextSelection = buildHeatmapLiveSelection(snapshot, appliedDims, nextFixedIndices);
-                        heatmapRuntimeApi.updateSelection(
+                        updatePromise = Promise.resolve(
+                            heatmapRuntimeApi.updateSelection(
                             {
                                 displayDims: nextSelection.displayDimsParam,
                                 fixedIndices: nextSelection.fixedIndicesParam,
@@ -3574,10 +3833,13 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                             {
                                 immediate: interaction === "change",
                                 preserveViewState: true,
+                                forceFullLoad,
                             }
-                        );
+                            )
+                        ).then((result) => result !== false);
                     }
-                    return;
+                    syncFixedIndexControlDom(dimIndex, normalizedValue, sourceSize);
+                    return updatePromise;
                 }
 
                 setState((prev) => {
@@ -3598,6 +3860,39 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                         },
                     };
                 });
+                syncFixedIndexControlDom(dimIndex, normalizedValue, sourceSize);
+                return Promise.resolve(true);
+            },
+
+            startFixedIndexPlayback(dim, size = null) {
+                const dimIndex = toSafeInteger(dim, null);
+                if (dimIndex === null || dimIndex < 0) {
+                    return;
+                }
+
+                const snapshot = getState();
+                const context = resolveFixedIndexPlaybackContext(snapshot, dimIndex);
+                if (!context) {
+                    stopFixedIndexPlaybackInternal();
+                    return;
+                }
+
+                if (fixedIndexPlaybackDim === dimIndex) {
+                    stopFixedIndexPlaybackInternal();
+                    return;
+                }
+
+                stopFixedIndexPlaybackInternal();
+                fixedIndexPlaybackDim = dimIndex;
+                setPlayingFixedDim(dimIndex);
+                syncFixedIndexControlDom(dimIndex, context.fixedIndices[dimIndex], size ?? context.size);
+                syncAllFixedIndexPlaybackDom();
+                fixedIndexPlaybackRunId += 1;
+                scheduleNextFixedIndexPlayback(fixedIndexPlaybackRunId);
+            },
+
+            stopFixedIndexPlayback() {
+                stopFixedIndexPlaybackInternal();
             },
 
             applyDisplayConfig() {
@@ -3642,11 +3937,15 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                         fixedIndices: nextFixedIndices,
                         stagedDisplayDims: nextDims,
                         stagedFixedIndices: nextFixedIndices,
+                        playingFixedDim: null,
                     },
                     matrixFullEnabled: false,
                     lineFullEnabled: false,
                     heatmapFullEnabled: false,
                 }));
+                clearFixedIndexPlaybackTimer();
+                fixedIndexPlaybackDim = null;
+                syncAllFixedIndexPlaybackDom();
 
                 if (
                     snapshot.route === "viewer" &&
@@ -3677,11 +3976,15 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                         ...(prev.displayConfig || getDisplayConfigDefaults()),
                         stagedDisplayDims: defaultDims,
                         stagedFixedIndices: nextFixedIndices,
+                        playingFixedDim: null,
                     },
                     matrixFullEnabled: false,
                     lineFullEnabled: false,
                     heatmapFullEnabled: false,
                 }));
+                clearFixedIndexPlaybackTimer();
+                fixedIndexPlaybackDim = null;
+                syncAllFixedIndexPlaybackDom();
             },
 
         };
@@ -5109,6 +5412,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const shape = controls.shape;
         const displayDims = controls.appliedDisplayDims;
         const fixedIndices = controls.appliedFixedIndices || {};
+        const dimensionLabels = Array.isArray(preview?.dimension_labels) ? preview.dimension_labels : [];
 
         if (!Array.isArray(displayDims) || displayDims.length !== 2 || shape.length < 2) {
             return {
@@ -5118,6 +5422,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 displayDimsParam: "",
                 fixedIndicesParam: "",
                 selectionKey: "",
+                shape,
+                displayDims: [],
+                fixedIndices: {},
+                dimensionLabels,
             };
         }
 
@@ -5141,6 +5449,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             displayDimsParam,
             fixedIndicesParam,
             selectionKey,
+            shape,
+            displayDims,
+            fixedIndices,
+            dimensionLabels,
         };
     }
 
@@ -6197,6 +6509,152 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     // Feature flag: exposes per-dimension index sliders for non-displayed axes in 3D+ dataset views.
     const SHOW_FIXED_INDEX_CONTROLS = true;
 
+    function getDimensionDisplayName(dimensionLabels, dim) {
+        const label = Array.isArray(dimensionLabels) && typeof dimensionLabels[dim] === "string"
+            ? dimensionLabels[dim].trim()
+            : "";
+        return label || `D${dim}`;
+    }
+
+    function renderFixedIndexControls(options = {}) {
+        const shape = normalizeShape(options.shape);
+        const displayDims = Array.isArray(options.displayDims) ? options.displayDims : [];
+        const fixedIndices = options.fixedIndices && typeof options.fixedIndices === "object" ? options.fixedIndices : {};
+        const dimensionLabels = Array.isArray(options.dimensionLabels) ? options.dimensionLabels : [];
+        const playingFixedDim = toSafeInteger(options.playingFixedDim, null);
+        const showPlayback = options.showPlayback === true;
+        const canAutoplayHiddenDims = options.canAutoplayHiddenDims === true;
+        const wrapperClassName = typeof options.wrapperClassName === "string" ? options.wrapperClassName.trim() : "";
+        const containerClassName = typeof options.containerClassName === "string" && options.containerClassName.trim()
+            ? options.containerClassName.trim()
+            : "dim-sliders";
+        const controlClassName = typeof options.controlClassName === "string" && options.controlClassName.trim()
+            ? options.controlClassName.trim()
+            : "";
+        const title = typeof options.title === "string" ? options.title.trim() : "";
+        const titleClassName = typeof options.titleClassName === "string" && options.titleClassName.trim()
+            ? options.titleClassName.trim()
+            : "dim-controls-heading";
+
+        if (shape.length < 3 || displayDims.length < 2) {
+            return "";
+        }
+
+        const controlMarkup = shape
+            .map((size, dim) => {
+                if (displayDims.includes(dim)) {
+                    return "";
+                }
+
+                const max = Math.max(0, size - 1);
+                const current = Number.isFinite(fixedIndices[dim]) ? fixedIndices[dim] : Math.floor(size / 2);
+                const isPlaying = playingFixedDim === dim;
+                const playbackDisabled = !canAutoplayHiddenDims || max < 1;
+                const dimName = getDimensionDisplayName(dimensionLabels, dim);
+                const controlClasses = ["dim-slider"];
+                if (controlClassName) {
+                    controlClasses.push(controlClassName);
+                }
+                const playbackMarkup = showPlayback
+                    ? `
+                  <div class="dim-slider-playback" data-fixed-playback-available="${playbackDisabled ? "0" : "1"}">
+                    <div class="dim-playback-buttons" role="group" aria-label="${escapeHtml(dimName)} playback controls">
+                      <button
+                        type="button"
+                        class="dim-play-icon-btn ${!isPlaying && !playbackDisabled ? "active" : ""}"
+                        data-fixed-index-play-action="start"
+                        data-fixed-dim="${dim}"
+                        data-fixed-size="${size}"
+                        aria-label="Play ${escapeHtml(dimName)}"
+                        title="Play ${escapeHtml(dimName)}"
+                        ${playbackDisabled ? "disabled" : ""}
+                      >
+                        <svg class="dim-play-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                          <path d="M5 3.5l7 4.5-7 4.5z" fill="currentColor"></path>
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        class="dim-play-icon-btn ${isPlaying ? "active" : ""}"
+                        data-fixed-index-play-action="stop"
+                        data-fixed-dim="${dim}"
+                        data-fixed-size="${size}"
+                        aria-label="Pause ${escapeHtml(dimName)}"
+                        title="Pause ${escapeHtml(dimName)}"
+                        ${playbackDisabled ? "disabled" : ""}
+                      >
+                        <svg class="dim-play-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                          <rect x="3.6" y="2.8" width="3.2" height="10.4" rx="0.9" fill="currentColor"></rect>
+                          <rect x="9.2" y="2.8" width="3.2" height="10.4" rx="0.9" fill="currentColor"></rect>
+                        </svg>
+                      </button>
+                    </div>
+                    <span
+                      class="dim-play-status"
+                      data-fixed-index-status="true"
+                      data-fixed-status-dim="${dim}"
+                    >
+                      Index ${current} / ${max}
+                    </span>
+                  </div>
+                `
+                    : "";
+
+                return `
+                <div
+                  class="${escapeHtml(controlClasses.join(" "))}"
+                  data-fixed-index-control="${dim}"
+                  data-fixed-playback-available="${playbackDisabled ? "0" : "1"}"
+                >
+                  <label>${escapeHtml(dimName)} index</label>
+                  <div class="slider-row">
+                    <input
+                      type="range"
+                      min="0"
+                      max="${max}"
+                      value="${current}"
+                      data-fixed-index-range="true"
+                      data-fixed-dim="${dim}"
+                      data-fixed-size="${size}"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      max="${max}"
+                      value="${current}"
+                      data-fixed-index-number="true"
+                      data-fixed-dim="${dim}"
+                      data-fixed-size="${size}"
+                    />
+                  </div>
+                  ${playbackMarkup}
+                </div>
+              `;
+            })
+            .join("");
+
+        if (!controlMarkup) {
+            return "";
+        }
+
+        const content = `
+        <div class="${escapeHtml(containerClassName)}">
+          ${controlMarkup}
+        </div>
+      `;
+
+        if (!wrapperClassName) {
+            return content;
+        }
+
+        return `
+        <div class="${escapeHtml(wrapperClassName)}">
+          ${title ? `<div class="${escapeHtml(titleClassName)}">${escapeHtml(title)}</div>` : ""}
+          ${content}
+        </div>
+      `;
+    }
+
     // Entry point: for ndim < 2 there are no selectable axes, so nothing is rendered
     function renderDimensionControls(state, preview) {
         const ndim = Number(preview?.ndim || 0);
@@ -6210,14 +6668,17 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const stagedDims = controls.stagedDisplayDims || appliedDims || [0, 1];
         const stagedFixed = controls.stagedFixedIndices || {};
         const dimensionLabels = Array.isArray(preview?.dimension_labels) ? preview.dimension_labels : [];
+        const playingFixedDim = toSafeInteger(state.displayConfig?.playingFixedDim, null);
+        const showAutoplayControls = state.displayTab === "heatmap" || state.displayTab === "image";
+        const canAutoplayHiddenDims =
+            showAutoplayControls && state.heatmapFullEnabled === true;
 
         if (!appliedDims || !stagedDims) {
             return "";
         }
 
         function getDimDisplayName(dim) {
-            const label = typeof dimensionLabels[dim] === "string" ? dimensionLabels[dim].trim() : "";
-            return label || `D${dim}`;
+            return getDimensionDisplayName(dimensionLabels, dim);
         }
 
         function formatDimPair(dims) {
@@ -6297,46 +6758,15 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             ? stagedDims[1]
             : yOptions[0]?.idx;
         const fixedIndexControls = SHOW_FIXED_INDEX_CONTROLS
-            ? `
-        <div class="dim-sliders">
-          ${shape
-                .map((size, dim) => {
-                    if (stagedDims.includes(dim)) {
-                        return "";
-                    }
-
-                    const max = Math.max(0, size - 1);
-                    const current = Number.isFinite(stagedFixed[dim]) ? stagedFixed[dim] : Math.floor(size / 2);
-
-                    return `
-                <div class="dim-slider">
-                  <label>${escapeHtml(getDimDisplayName(dim))} index</label>
-                  <div class="slider-row">
-                    <input
-                      type="range"
-                      min="0"
-                      max="${max}"
-                      value="${current}"
-                      data-fixed-index-range="true"
-                      data-fixed-dim="${dim}"
-                      data-fixed-size="${size}"
-                    />
-                    <input
-                      type="number"
-                      min="0"
-                      max="${max}"
-                      value="${current}"
-                      data-fixed-index-number="true"
-                      data-fixed-dim="${dim}"
-                      data-fixed-size="${size}"
-                    />
-                  </div>
-                </div>
-              `;
-                })
-                .join("")}
-        </div>
-      `
+            ? renderFixedIndexControls({
+                shape,
+                displayDims: stagedDims,
+                fixedIndices: stagedFixed,
+                dimensionLabels,
+                playingFixedDim,
+                showPlayback: showAutoplayControls,
+                canAutoplayHiddenDims,
+            })
             : "";
 
         return `
@@ -6400,6 +6830,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     </aside>
   `;
     }
+    if (typeof renderFixedIndexControls !== "undefined") {
+        moduleState.renderFixedIndexControls = renderFixedIndexControls;
+        global.renderFixedIndexControls = renderFixedIndexControls;
+    }
     if (typeof renderDimensionControls !== "undefined") {
         moduleState.renderDimensionControls = renderDimensionControls;
         global.renderDimensionControls = renderDimensionControls;
@@ -6428,6 +6862,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
     // Feature flag: when true, the Heatmap tab renders the same histogram panel used by Image.
     const SHOW_HEATMAP_HISTOGRAM = false;
+
+    // Feature flag: when true, hidden-dimension playback controls are rendered inside the Heatmap/Image panel shell.
+    const SHOW_HEATMAP_PANEL_PLAYBACK_CONTROLS = true;
 
     // Renders the correct SVG icon for a toolbar button based on its kind string
     function renderToolIcon(kind) {
@@ -6575,10 +7012,34 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
           ${renderIconToolButton("Reset view", "data-line-reset-view", "reset")}
         </div>
         <div class="line-tool-group">
-          <button type="button" class="line-tool-btn" data-line-jump-start="true">Start</button>
-          <button type="button" class="line-tool-btn" data-line-step-prev="true">Prev</button>
-          <button type="button" class="line-tool-btn" data-line-step-next="true">Next</button>
-          <button type="button" class="line-tool-btn" data-line-jump-end="true">End</button>
+          <button
+            type="button"
+            class="line-tool-btn"
+            data-line-jump-start="true"
+            title="Start: takes you to the start of the plot."
+            aria-label="Start: takes you to the start of the plot."
+          >Start</button>
+          <button
+            type="button"
+            class="line-tool-btn"
+            data-line-step-prev="true"
+            title="Prev: switches to the previous selected point."
+            aria-label="Prev: switches to the previous selected point."
+          >Prev</button>
+          <button
+            type="button"
+            class="line-tool-btn"
+            data-line-step-next="true"
+            title="Next: switches to the next selected point."
+            aria-label="Next: switches to the next selected point."
+          >Next</button>
+          <button
+            type="button"
+            class="line-tool-btn"
+            data-line-jump-end="true"
+            title="End: takes you to the end of the plot."
+            aria-label="End: takes you to the end of the plot."
+          >End</button>
         </div>
         <div class="line-tool-group">
           <span class="line-zoom-label" data-line-zoom-label="true">100%</span>
@@ -6808,6 +7269,24 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     function renderVirtualHeatmapShell(state, config, options = {}) {
         const isImageMode = (state.displayTab || "line") === "image";
         const includeHistogram = options && options.includeHistogram === true;
+        const panelPlaybackControls =
+            SHOW_HEATMAP_PANEL_PLAYBACK_CONTROLS === true &&
+            typeof global.renderFixedIndexControls === "function"
+                ? global.renderFixedIndexControls({
+                    shape: config.shape,
+                    displayDims: config.displayDims,
+                    fixedIndices: config.fixedIndices,
+                    dimensionLabels: config.dimensionLabels,
+                    playingFixedDim: toSafeInteger(state.displayConfig?.playingFixedDim, null),
+                    showPlayback: true,
+                    canAutoplayHiddenDims: state.heatmapFullEnabled === true,
+                    wrapperClassName: "heatmap-panel-controls",
+                    containerClassName: "dim-sliders heatmap-panel-dim-sliders",
+                    controlClassName: "heatmap-panel-dim-slider",
+                    title: "Slice controls",
+                    titleClassName: "heatmap-panel-controls-title",
+                })
+                : "";
         const resolvedColormap =
             isImageMode
                 ? "grayscale"
@@ -6861,6 +7340,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
           <span class="line-zoom-label" data-heatmap-range-label="true">Grid: --</span>
         </div>
       </div>
+      ${panelPlaybackControls}
       <div class="line-chart-stage">
         <div
           class="line-chart-canvas heatmap-chart-canvas"
@@ -10485,10 +10965,34 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
           ${renderLineIconToolButton("Reset view", "data-line-reset-view", "reset")}
         </div>
         <div class="line-tool-group">
-          <button type="button" class="line-tool-btn" data-line-jump-start="true">Start</button>
-          <button type="button" class="line-tool-btn" data-line-step-prev="true">Prev</button>
-          <button type="button" class="line-tool-btn" data-line-step-next="true">Next</button>
-          <button type="button" class="line-tool-btn" data-line-jump-end="true">End</button>
+          <button
+            type="button"
+            class="line-tool-btn"
+            data-line-jump-start="true"
+            title="Start: takes you to the start of the plot."
+            aria-label="Start: takes you to the start of the plot."
+          >Start</button>
+          <button
+            type="button"
+            class="line-tool-btn"
+            data-line-step-prev="true"
+            title="Prev: switches to the previous selected point."
+            aria-label="Prev: switches to the previous selected point."
+          >Prev</button>
+          <button
+            type="button"
+            class="line-tool-btn"
+            data-line-step-next="true"
+            title="Next: switches to the next selected point."
+            aria-label="Next: switches to the next selected point."
+          >Next</button>
+          <button
+            type="button"
+            class="line-tool-btn"
+            data-line-jump-end="true"
+            title="End: takes you to the end of the plot."
+            aria-label="End: takes you to the end of the plot."
+          >End</button>
         </div>
         <div class="line-tool-group">
           <span class="line-zoom-label" data-line-zoom-label="true">100%</span>
@@ -12008,29 +12512,40 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
         async function loadHighResHeatmap(options = {}) {
             const preserveViewState = options && options.preserveViewState === true;
+            const forceFullLoad = options && options.forceFullLoad === true;
             const loadToken = ++runtime.loadSequence;
+            if (forceFullLoad) {
+                const fullResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
+                    preserveViewState,
+                    loadToken,
+                });
+                return fullResult.loaded === true;
+            }
             // Progressive loading: fast preview first (256), then full resolution (1024)
             const PREVIEW_SIZE = 256;
             const previewResult = await fetchHeatmapAtSize(PREVIEW_SIZE, "Loading heatmap preview...", {
                 preserveViewState,
                 loadToken,
             });
-            if (runtime.destroyed || loadToken !== runtime.loadSequence) return;
+            if (runtime.destroyed || loadToken !== runtime.loadSequence) return false;
             if (previewResult.loaded && HEATMAP_MAX_SIZE > PREVIEW_SIZE) {
                 // Small delay so the user sees the preview before the full load starts
                 await new Promise((r) => setTimeout(r, 50));
-                if (runtime.destroyed || loadToken !== runtime.loadSequence) return;
-                await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
+                if (runtime.destroyed || loadToken !== runtime.loadSequence) return false;
+                const fullResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
                     preserveViewState,
                     loadToken,
                 });
+                return fullResult.loaded === true;
             } else if (!previewResult.loaded) {
                 // Fallback: try full size directly
-                await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading high-res heatmap...", {
+                const fallbackResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading high-res heatmap...", {
                     preserveViewState,
                     loadToken,
                 });
+                return fallbackResult.loaded === true;
             }
+            return previewResult.loaded === true;
         }
 
         async function exportCsvDisplayed() {
@@ -12137,7 +12652,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
         async function applySelectionUpdate(nextSelection, options = {}) {
             if (runtime.destroyed || !nextSelection || typeof nextSelection !== "object") {
-                return;
+                return false;
             }
 
             const nextDisplayDims =
@@ -12152,10 +12667,11 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             const fixedChanged = nextFixedIndices !== runtime.fixedIndices;
             const selectionChanged = nextSelectionKey !== runtime.selectionKey;
             if (!dimsChanged && !fixedChanged && !selectionChanged) {
-                return;
+                return true;
             }
 
             const preserveViewState = options.preserveViewState === true && !dimsChanged;
+            const forceFullLoad = options.forceFullLoad === true;
             persistViewState();
             runtime.loadSequence += 1;
             cancelInFlightRequests();
@@ -12179,16 +12695,17 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             if (restoredFromCache) {
                 if (runtime.loadedPhase !== "highres") {
                     const loadToken = runtime.loadSequence;
-                    void fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
+                    const fullFromCacheResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
                         preserveViewState,
                         loadToken,
                     });
+                    return fullFromCacheResult.loaded === true;
                 }
-                return;
+                return true;
             }
 
             setMatrixStatus(statusElement, "Updating heatmap slice...", "info");
-            await loadHighResHeatmap({ preserveViewState });
+            return await loadHighResHeatmap({ preserveViewState, forceFullLoad });
         }
 
         function queueSelectionUpdate(nextSelection, options = {}) {
@@ -12200,28 +12717,32 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             if (options && options.immediate === true) {
                 const immediateUpdate = pendingSelectionUpdate;
                 clearPendingSelectionUpdate();
-                void applySelectionUpdate(immediateUpdate.nextSelection, immediateUpdate.options);
-                return;
+                return applySelectionUpdate(immediateUpdate.nextSelection, immediateUpdate.options);
             }
 
             if (selectionUpdateTimer !== null) {
                 clearTimeout(selectionUpdateTimer);
             }
 
-            selectionUpdateTimer = setTimeout(() => {
+            return new Promise((resolve, reject) => {
+                selectionUpdateTimer = setTimeout(() => {
                 selectionUpdateTimer = null;
                 const queuedUpdate = pendingSelectionUpdate;
                 pendingSelectionUpdate = null;
                 if (!queuedUpdate) {
+                    resolve(false);
                     return;
                 }
-                void applySelectionUpdate(queuedUpdate.nextSelection, queuedUpdate.options);
-            }, HEATMAP_SELECTION_UPDATE_DEBOUNCE_MS);
+                Promise.resolve(applySelectionUpdate(queuedUpdate.nextSelection, queuedUpdate.options))
+                    .then(resolve)
+                    .catch(reject);
+                }, HEATMAP_SELECTION_UPDATE_DEBOUNCE_MS);
+            });
         }
 
         shell.__heatmapRuntimeApi = {
             updateSelection(nextSelection, options = {}) {
-                queueSelectionUpdate(nextSelection, options);
+                return queueSelectionUpdate(nextSelection, options);
             },
         };
 
@@ -13207,7 +13728,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
             clearEmptyMessage();
             const domainSpan = getVisibleDomainSpan();
-            const fullSpan = getFullDomainSpan();
             const visibleBins = [];
             let visiblePeakCount = 0;
             for (let index = 0; index < runtime.histogram.binCount; index += 1) {
@@ -13236,8 +13756,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                     const barWidth = Math.max(0.9, x2 - x1 - 0.35);
                     const barHeight = (bin.count / visiblePeakCount) * chartHeight;
                     const y = baselineY - barHeight;
-                    const toneRatio = fullSpan <= 0 ? 0.5 : ((bin.start + bin.end) * 0.5 - runtime.histogram.min) / fullSpan;
-                    const tone = Math.round(22 + clampHistogramValue(toneRatio, 0, 1) * 220);
                     return `
           <rect
             x="${x1.toFixed(3)}"
@@ -13245,7 +13763,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             width="${barWidth.toFixed(3)}"
             height="${Math.max(1, barHeight).toFixed(3)}"
             rx="1.2"
-            fill="rgb(${tone}, ${tone}, ${tone})"
+            fill="#111111"
           ></rect>
         `;
                 })
@@ -13789,6 +14307,20 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             if (dimReset && root.contains(dimReset)) {
                 if (typeof runtimeActions.resetDisplayConfigFromPreview === "function") {
                     runtimeActions.resetDisplayConfigFromPreview();
+                }
+                return;
+            }
+
+            var fixedIndexPlaybackButton = target.closest("[data-fixed-index-play-action]");
+            if (fixedIndexPlaybackButton && root.contains(fixedIndexPlaybackButton)) {
+                var playbackAction = fixedIndexPlaybackButton.dataset.fixedIndexPlayAction || "";
+                var playDim = Number(fixedIndexPlaybackButton.dataset.fixedDim);
+                var playSize = Number(fixedIndexPlaybackButton.dataset.fixedSize);
+
+                if (playbackAction === "start" && typeof runtimeActions.startFixedIndexPlayback === "function") {
+                    runtimeActions.startFixedIndexPlayback(playDim, playSize);
+                } else if (playbackAction === "stop" && typeof runtimeActions.stopFixedIndexPlayback === "function") {
+                    runtimeActions.stopFixedIndexPlayback(playDim);
                 }
                 return;
             }
