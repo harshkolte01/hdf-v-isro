@@ -6864,7 +6864,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     const SHOW_HEATMAP_HISTOGRAM = false;
 
     // Feature flag: when true, hidden-dimension playback controls are rendered inside the Heatmap/Image panel shell.
-    const SHOW_HEATMAP_PANEL_PLAYBACK_CONTROLS = true;
+    const SHOW_HEATMAP_PANEL_PLAYBACK_CONTROLS = false;
 
     // Renders the correct SVG icon for a toolbar button based on its kind string
     function renderToolIcon(kind) {
