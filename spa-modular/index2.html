@@ -12,8 +12,8 @@
 
       Important:
       - Pass the backend object key/path, not a full browser URL.
-      - ES-module viewer assets are loaded from `style.css` and `js2/*.js`.
-      - The runtime reads `?file=` inside `js2/app-viewer.js`.
+      - Modular viewer assets are loaded from `style.css` and `js/*.js`.
+      - The runtime reads `?file=` inside `js/app-viewer.js`.
     -->
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -102,6 +102,12 @@
       Viewer shell loaded. Waiting for file query parameter from host UI.
     </div>
 
-    <script type="module" src="js2/app-viewer.js"></script>
+    <script src="js/viewer-core.js"></script>
+    <script src="js/viewer-api.js"></script>
+    <script src="js/viewer-state.js"></script>
+    <script src="js/viewer-render.js"></script>
+    <script src="js/viewer-runtimes.js"></script>
+    <script src="js/viewer-shell.js"></script>
+    <script src="js/app-viewer.js"></script>
   </body>
 </html>
