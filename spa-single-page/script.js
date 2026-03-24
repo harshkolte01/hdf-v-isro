@@ -3312,7 +3312,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
                 return null;
             }
 
-            const shell = document.querySelector('[data-line-shell]:not(.heatmap-inline-line-shell)');
+            const shell = document.querySelector(
+                '[data-line-shell]:not(.heatmap-inline-line-shell):not(.matrix-inline-line-shell)'
+            );
             if (!shell) {
                 return null;
             }
@@ -6296,7 +6298,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
           <div class="image-histogram-title" data-image-histogram-title="true">${escapeHtml(title)}</div>
           <div class="image-histogram-subtitle" data-image-histogram-subtitle="true">${escapeHtml(subtitle)}</div>
         </div>
-        <span class="image-histogram-badge" data-image-histogram-badge="true">${escapeHtml(badgeText)}</span>
+        
       </div>
       <div class="line-chart-toolbar image-histogram-toolbar">
         <div class="line-tool-group">
@@ -7322,6 +7324,30 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
           style="width:${config.cols * MATRIX_COL_WIDTH}px;height:${config.rows * MATRIX_ROW_HEIGHT}px;"
         ></div>
       </div>
+      <div class="matrix-linked-plot" data-matrix-linked-plot="true" hidden>
+        <div class="matrix-linked-plot-header">
+          <div class="matrix-linked-plot-title" data-matrix-linked-title="true">
+            Plot mode: click a row or column header to inspect its profile.
+          </div>
+          <div class="matrix-linked-plot-actions">
+            <button
+              type="button"
+              class="line-tool-btn line-tool-btn-icon"
+              data-matrix-plot-close="true"
+              aria-label="Close matrix plot"
+              title="Close plot"
+            >
+              <svg class="line-tool-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M4 4l8 8M12 4l-8 8"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="data-status info matrix-linked-plot-status" data-line-status="true">
+          Click a row or column header to plot.
+        </div>
+        <div class="matrix-linked-plot-shell-host" data-matrix-linked-shell-host="true"></div>
+      </div>
     </div>
   `;
     }
@@ -7336,7 +7362,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             : config.rows <= 0 || config.cols <= 0
                 ? "No values available for the selected display dims."
                 : isEnabled
-                    ? "Streaming blocks as you scroll."
+                    ? "Streaming blocks as you scroll. Click a row or column header to plot."
                     : "Preview mode. Click Load full view.";
         const statusTone = !config.supported || config.rows <= 0 || config.cols <= 0 ? "error" : "info";
         const statusClass = `data-status ${statusTone === "error" ? "error" : "info"}`;
@@ -7985,6 +8011,11 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
 
     // Max concurrent block fetch requests to avoid flooding the backend on large table scrolls
     const MATRIX_MAX_PARALLEL_REQUESTS = 4;
+    const MATRIX_LINKED_PLOT_CACHE =
+        global.__matrixLinkedPlotCache instanceof Map
+            ? global.__matrixLinkedPlotCache
+            : new Map();
+    global.__matrixLinkedPlotCache = MATRIX_LINKED_PLOT_CACHE;
 
     // Returns a cached block or null; block key encodes all offset/limit parameters
     function getCachedMatrixBlock(runtime, rowOffset, colOffset, rowLimit, colLimit) {
@@ -8029,6 +8060,11 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
         const headerCellsLayer = shell.querySelector("[data-matrix-header-cells]");
         const indexLayer = shell.querySelector("[data-matrix-index]");
         const cellsLayer = shell.querySelector("[data-matrix-cells]");
+        const linkedPlotPanel = shell.querySelector("[data-matrix-linked-plot]");
+        const linkedPlotTitle = shell.querySelector("[data-matrix-linked-title]");
+        const linkedPlotStatusElement = shell.querySelector("[data-line-status]");
+        const linkedPlotShellHost = shell.querySelector("[data-matrix-linked-shell-host]");
+        const linkedPlotCloseButton = shell.querySelector("[data-matrix-plot-close]");
         const statusElement =
             shell.closest(".data-section")?.querySelector("[data-matrix-status]") || null;
 
@@ -8080,6 +8116,8 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             headerPool: [],
             rowIndexPool: [],
             cellPool: [],
+            selectedPlot: null,
+            linkedLineCleanup: null,
         };
 
         const visible = {
@@ -8090,6 +8128,197 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
         };
 
         const clampIndex = (value, min, max) => Math.max(min, Math.min(max, value));
+
+        function setLinkedPlotTitle(plot = runtime.selectedPlot) {
+            if (!linkedPlotTitle) {
+                return;
+            }
+
+            if (!plot) {
+                linkedPlotTitle.textContent =
+                    "Plot mode: click a row or column header to inspect its profile.";
+                return;
+            }
+
+            linkedPlotTitle.textContent =
+                plot.kind === "row"
+                    ? `Selected row ${plot.index} | Plotting values across columns`
+                    : `Selected column ${plot.index} | Plotting values across rows`;
+        }
+
+        function clearLinkedLineRuntime() {
+            if (typeof runtime.linkedLineCleanup === "function") {
+                try {
+                    runtime.linkedLineCleanup();
+                } catch (_error) {
+                    // ignore cleanup errors for detached inline plots
+                }
+            }
+            runtime.linkedLineCleanup = null;
+            if (linkedPlotShellHost) {
+                linkedPlotShellHost.innerHTML = "";
+            }
+        }
+
+        function closeLinkedPlot() {
+            runtime.selectedPlot = null;
+            MATRIX_LINKED_PLOT_CACHE.delete(runtime.selectionKey);
+            clearLinkedLineRuntime();
+            if (linkedPlotPanel) {
+                linkedPlotPanel.hidden = true;
+            }
+            setLinkedPlotTitle(null);
+            setMatrixStatus(linkedPlotStatusElement, "Click a row or column header to plot.", "info");
+            queueRender();
+        }
+
+        function revealLinkedPlot() {
+            if (!linkedPlotPanel || linkedPlotPanel.hidden) {
+                return;
+            }
+
+            try {
+                linkedPlotPanel.scrollIntoView({
+                    block: "nearest",
+                    inline: "nearest",
+                    behavior: "smooth",
+                });
+            } catch (_error) {
+                linkedPlotPanel.scrollIntoView(false);
+            }
+        }
+
+        function normalizePlotSelection(kind, index) {
+            const normalizedKind =
+                kind === "row"
+                    ? "row"
+                    : kind === "col"
+                        ? "col"
+                        : null;
+            const normalizedIndex = toSafeInteger(index, null);
+            if (!normalizedKind || normalizedIndex === null) {
+                return null;
+            }
+
+            const maxIndex = normalizedKind === "row" ? runtime.rows - 1 : runtime.cols - 1;
+            if (maxIndex < 0 || normalizedIndex < 0 || normalizedIndex > maxIndex) {
+                return null;
+            }
+
+            const totalPoints = normalizedKind === "row" ? runtime.cols : runtime.rows;
+            if (totalPoints <= 0) {
+                return null;
+            }
+
+            const baseSelectionKey =
+                typeof buildLineSelectionKey === "function"
+                    ? buildLineSelectionKey(
+                        runtime.fileKey,
+                        runtime.path,
+                        runtime.displayDims,
+                        runtime.fixedIndices,
+                        normalizedIndex
+                    )
+                    : [
+                        runtime.fileKey || "no-file",
+                        runtime.path || "/",
+                        runtime.displayDims || "none",
+                        runtime.fixedIndices || "none",
+                        normalizedIndex,
+                    ].join("|");
+
+            return {
+                kind: normalizedKind,
+                index: normalizedIndex,
+                totalPoints,
+                lineDim: normalizedKind,
+                lineIndex: normalizedIndex,
+                selectionKey: `${baseSelectionKey}|${normalizedKind}`,
+                title:
+                    normalizedKind === "row"
+                        ? `Row profile: Row ${normalizedIndex} across columns`
+                        : `Column profile: Column ${normalizedIndex} across rows`,
+            };
+        }
+
+        function renderLinkedPlot(plot, options = {}) {
+            const normalizedPlot = normalizePlotSelection(plot?.kind, plot?.index);
+            if (!normalizedPlot) {
+                return false;
+            }
+
+            if (
+                typeof global.renderLinkedLineShellMarkup !== "function" ||
+                typeof initializeLineRuntime !== "function" ||
+                !linkedPlotPanel ||
+                !linkedPlotShellHost
+            ) {
+                setMatrixStatus(statusElement, "Inline line plot is unavailable.", "error");
+                return false;
+            }
+
+            runtime.selectedPlot = normalizedPlot;
+            MATRIX_LINKED_PLOT_CACHE.set(runtime.selectionKey, {
+                kind: normalizedPlot.kind,
+                index: normalizedPlot.index,
+            });
+            linkedPlotPanel.hidden = false;
+            setLinkedPlotTitle(normalizedPlot);
+            setMatrixStatus(linkedPlotStatusElement, `Loading ${normalizedPlot.title}...`, "info");
+            clearLinkedLineRuntime();
+
+            linkedPlotShellHost.innerHTML = global.renderLinkedLineShellMarkup({
+                fileKey: runtime.fileKey,
+                fileEtag: runtime.fileEtag,
+                path: runtime.path,
+                displayDims: runtime.displayDims,
+                fixedIndices: runtime.fixedIndices,
+                selectionKey: normalizedPlot.selectionKey,
+                totalPoints: normalizedPlot.totalPoints,
+                lineIndex: normalizedPlot.lineIndex,
+                lineDim: normalizedPlot.lineDim,
+                notation: runtime.notation,
+                lineGrid: true,
+                lineAspect: "line",
+                inlineShellClass: "matrix-inline-line-shell",
+            });
+
+            const lineShell = linkedPlotShellHost.querySelector("[data-line-shell]");
+            if (!lineShell) {
+                setMatrixStatus(statusElement, "Failed to create inline line plot.", "error");
+                return false;
+            }
+
+            const cleanup = initializeLineRuntime(lineShell);
+            runtime.linkedLineCleanup =
+                typeof cleanup === "function"
+                    ? cleanup
+                    : typeof lineShell.__lineRuntimeCleanup === "function"
+                        ? lineShell.__lineRuntimeCleanup
+                        : null;
+
+            if (options.reveal !== false) {
+                revealLinkedPlot();
+            }
+            queueRender();
+            return true;
+        }
+
+        function activatePlotFromTrigger(trigger, options = {}) {
+            if (!(trigger instanceof Element)) {
+                return false;
+            }
+
+            const plot = normalizePlotSelection(
+                String(trigger.dataset.matrixPlotKind || "").trim().toLowerCase(),
+                trigger.dataset.matrixPlotIndex
+            );
+            if (!plot) {
+                return false;
+            }
+
+            return renderLinkedPlot(plot, options);
+        }
 
         function queueRender() {
             if (runtime.destroyed || runtime.rafToken !== null) {
@@ -8112,8 +8341,8 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             setMatrixStatus(
                 statusElement,
                 runtime.loadedBlocks > 0
-                    ? `Loaded ${runtime.loadedBlocks} block${runtime.loadedBlocks > 1 ? "s" : ""}.`
-                    : "Scroll to stream blocks.",
+                    ? `Loaded ${runtime.loadedBlocks} block${runtime.loadedBlocks > 1 ? "s" : ""}. Click a row or column header to plot.`
+                    : "Scroll to stream blocks. Click a row or column header to plot.",
                 "info"
             );
         }
@@ -8308,10 +8537,22 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             );
             visibleCols.forEach((col, index) => {
                 const node = runtime.headerPool[index];
+                const isSelected =
+                    runtime.selectedPlot?.kind === "col" && runtime.selectedPlot?.index === col;
                 node.style.left = `${col * MATRIX_COL_WIDTH}px`;
                 node.style.width = `${MATRIX_COL_WIDTH}px`;
                 node.style.height = `${MATRIX_HEADER_HEIGHT}px`;
                 node.textContent = String(col);
+                node.dataset.matrixPlotTrigger = "true";
+                node.dataset.matrixPlotKind = "col";
+                node.dataset.matrixPlotIndex = String(col);
+                node.setAttribute("role", "button");
+                node.setAttribute("tabindex", "0");
+                node.setAttribute("aria-label", `Plot column ${col} as a line graph`);
+                node.setAttribute("aria-pressed", isSelected ? "true" : "false");
+                node.setAttribute("title", `Plot column ${col}`);
+                node.classList.add("matrix-cell-trigger");
+                node.classList.toggle("is-selected", isSelected);
             });
 
             indexLayer.style.transform = "";
@@ -8323,11 +8564,23 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             );
             visibleRows.forEach((row, index) => {
                 const node = runtime.rowIndexPool[index];
+                const isSelected =
+                    runtime.selectedPlot?.kind === "row" && runtime.selectedPlot?.index === row;
                 node.style.left = "0px";
                 node.style.top = `${row * MATRIX_ROW_HEIGHT}px`;
                 node.style.width = `${MATRIX_INDEX_WIDTH}px`;
                 node.style.height = `${MATRIX_ROW_HEIGHT}px`;
                 node.textContent = String(row);
+                node.dataset.matrixPlotTrigger = "true";
+                node.dataset.matrixPlotKind = "row";
+                node.dataset.matrixPlotIndex = String(row);
+                node.setAttribute("role", "button");
+                node.setAttribute("tabindex", "0");
+                node.setAttribute("aria-label", `Plot row ${row} as a line graph`);
+                node.setAttribute("aria-pressed", isSelected ? "true" : "false");
+                node.setAttribute("title", `Plot row ${row}`);
+                node.classList.add("matrix-cell-trigger");
+                node.classList.toggle("is-selected", isSelected);
             });
 
             const totalCellCount = visibleRows.length * visibleCols.length;
@@ -8455,6 +8708,42 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             }
         }
 
+        function resolvePlotTriggerTarget(target) {
+            if (!(target instanceof Element)) {
+                return null;
+            }
+            const trigger = target.closest("[data-matrix-plot-trigger='true']");
+            return trigger && shell.contains(trigger) ? trigger : null;
+        }
+
+        function onPlotTriggerClick(event) {
+            const trigger = resolvePlotTriggerTarget(event.target);
+            if (!trigger) {
+                return;
+            }
+            event.preventDefault();
+            activatePlotFromTrigger(trigger, { reveal: true });
+        }
+
+        function onPlotTriggerKeyDown(event) {
+            if (event.key !== "Enter" && event.key !== " ") {
+                return;
+            }
+
+            const trigger = resolvePlotTriggerTarget(event.target);
+            if (!trigger) {
+                return;
+            }
+
+            event.preventDefault();
+            activatePlotFromTrigger(trigger, { reveal: true });
+        }
+
+        function onCloseLinkedPlot(event) {
+            event?.preventDefault?.();
+            closeLinkedPlot();
+        }
+
         async function exportCsvDisplayed() {
             if (runtime.destroyed) {
                 throw new Error("Matrix runtime is no longer active.");
@@ -8534,6 +8823,13 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             queueRender();
         };
         table.addEventListener("scroll", onScroll, { passive: true });
+        headerCellsLayer.addEventListener("click", onPlotTriggerClick);
+        headerCellsLayer.addEventListener("keydown", onPlotTriggerKeyDown);
+        indexLayer.addEventListener("click", onPlotTriggerClick);
+        indexLayer.addEventListener("keydown", onPlotTriggerKeyDown);
+        if (linkedPlotCloseButton) {
+            linkedPlotCloseButton.addEventListener("click", onCloseLinkedPlot);
+        }
 
         let resizeObserver = null;
         const onWindowResize = () => {
@@ -8548,17 +8844,31 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
         }
 
         updateStatusFromRuntime();
+        setLinkedPlotTitle(null);
+        setMatrixStatus(linkedPlotStatusElement, "Click a row or column header to plot.", "info");
+        const persistedPlot = MATRIX_LINKED_PLOT_CACHE.get(runtime.selectionKey);
+        if (persistedPlot && typeof persistedPlot === "object") {
+            renderLinkedPlot(persistedPlot, { reveal: false });
+        }
         queueRender();
 
         const cleanup = () => {
             runtime.destroyed = true;
             runtime.blockQueue = [];
             runtime.queuedBlockKeys.clear();
+            clearLinkedLineRuntime();
             runtime.activeCancelKeys.forEach((cancelKey) => {
                 cancelPendingRequest(cancelKey, "matrix-runtime-disposed");
             });
             runtime.activeCancelKeys.clear();
             table.removeEventListener("scroll", onScroll);
+            headerCellsLayer.removeEventListener("click", onPlotTriggerClick);
+            headerCellsLayer.removeEventListener("keydown", onPlotTriggerKeyDown);
+            indexLayer.removeEventListener("click", onPlotTriggerClick);
+            indexLayer.removeEventListener("keydown", onPlotTriggerKeyDown);
+            if (linkedPlotCloseButton) {
+                linkedPlotCloseButton.removeEventListener("click", onCloseLinkedPlot);
+            }
             if (resizeObserver) {
                 resizeObserver.disconnect();
             } else {
@@ -8605,7 +8915,80 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
     const LINE_FULLSCREEN_RESTORE_TTL_MS = 1200;
     // Fixed stroke colors for compare overlay series (index 0 = primary, 1-4 = additional series)
     const LINE_COMPARE_COLORS = ["#DC2626", "#16A34A", "#D97706", "#0EA5E9", "#334155"];
+    const LINE_WINDOW_RENDER_CACHE =
+        global.__lineWindowRenderCache instanceof Map
+            ? global.__lineWindowRenderCache
+            : new Map();
+    const MAX_LINE_WINDOW_RENDER_CACHE_ENTRIES = 320;
+    global.__lineWindowRenderCache = LINE_WINDOW_RENDER_CACHE;
     let lineFullscreenRestore = null;
+
+    function getLineWindowRenderCacheKey(runtime, start = runtime?.viewStart, span = runtime?.viewSpan) {
+        return [
+            runtime?.selectionKey || "no-selection",
+            runtime?.fileEtag || "no-etag",
+            runtime?.qualityRequested || "auto",
+            toSafeInteger(start, 0),
+            toSafeInteger(span, 0),
+        ].join("|");
+    }
+
+    function cloneLinePoints(points) {
+        return Array.isArray(points)
+            ? points
+                .map((point) => ({
+                    x: Number(point?.x),
+                    y: Number(point?.y),
+                }))
+                .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+            : [];
+    }
+
+    function cloneCompareSeries(seriesList) {
+        return Array.isArray(seriesList)
+            ? seriesList
+                .map((entry) => ({
+                    isBase: entry?.isBase === true,
+                    path: String(entry?.path || ""),
+                    label: String(entry?.label || ""),
+                    color: String(entry?.color || "#2563EB"),
+                    points: cloneLinePoints(entry?.points),
+                }))
+                .filter((entry) => entry.points.length > 0)
+            : [];
+    }
+
+    function rememberLineWindowRender(runtime, snapshot) {
+        if (!runtime || !snapshot || typeof snapshot !== "object") {
+            return;
+        }
+        const cacheKey = getLineWindowRenderCacheKey(runtime, snapshot.viewStart, snapshot.viewSpan);
+        LINE_WINDOW_RENDER_CACHE.delete(cacheKey);
+        LINE_WINDOW_RENDER_CACHE.set(cacheKey, {
+            ...snapshot,
+            basePoints: cloneLinePoints(snapshot.basePoints),
+            compareSeries: cloneCompareSeries(snapshot.compareSeries),
+            failedCompareTargets: Array.isArray(snapshot.failedCompareTargets)
+                ? snapshot.failedCompareTargets.map((entry) => ({
+                    path: String(entry?.path || ""),
+                    label: String(entry?.label || ""),
+                    reason: String(entry?.reason || ""),
+                }))
+                : [],
+        });
+        while (LINE_WINDOW_RENDER_CACHE.size > MAX_LINE_WINDOW_RENDER_CACHE_ENTRIES) {
+            const oldestKey = LINE_WINDOW_RENDER_CACHE.keys().next().value;
+            if (!oldestKey) {
+                break;
+            }
+            LINE_WINDOW_RENDER_CACHE.delete(oldestKey);
+        }
+    }
+
+    function getLineWindowRender(runtime, start = runtime?.viewStart, span = runtime?.viewSpan) {
+        const cacheKey = getLineWindowRenderCacheKey(runtime, start, span);
+        return LINE_WINDOW_RENDER_CACHE.get(cacheKey) || null;
+    }
 
     function isNumericDtype(dtype) {
         const normalized = String(dtype || "").trim().toLowerCase();
@@ -8830,6 +9213,8 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             hoverDot: null,
             zoomFocusX: null,
             fullscreenActive: false,
+            recoveryRetryCount: 0,
+            recoveryRetryTimer: null,
         };
 
         let selectionUpdateTimer = null;
@@ -8909,10 +9294,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
                 0,
                 runtime.totalPoints - 1
             ).toLocaleString()}`;
-            rangeLabel.textContent =
-                typeof pointCount === "number" && pointCount >= 0
-                    ? `${baseText} | ${pointCount.toLocaleString()} points`
-                    : baseText;
+            rangeLabel.textContent = baseText;
         }
 
         function syncQualityControl() {
@@ -9246,6 +9628,76 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             legendElement.innerHTML = `${seriesMarkup}${failedMarkup}`;
         }
 
+        function clearRecoveryRetry() {
+            if (runtime.recoveryRetryTimer !== null) {
+                clearTimeout(runtime.recoveryRetryTimer);
+                runtime.recoveryRetryTimer = null;
+            }
+        }
+
+        function scheduleRecoveryFetch(reason = "retry") {
+            if (
+                runtime.destroyed ||
+                (Array.isArray(runtime.points) && runtime.points.length >= 2) ||
+                runtime.recoveryRetryCount >= 2
+            ) {
+                return;
+            }
+            clearRecoveryRetry();
+            const retrySelectionKey = runtime.selectionKey;
+            const retryStart = runtime.viewStart;
+            const retrySpan = runtime.viewSpan;
+            runtime.recoveryRetryCount += 1;
+            runtime.recoveryRetryTimer = setTimeout(() => {
+                runtime.recoveryRetryTimer = null;
+                if (
+                    runtime.destroyed ||
+                    retrySelectionKey !== runtime.selectionKey ||
+                    retryStart !== runtime.viewStart ||
+                    retrySpan !== runtime.viewSpan
+                ) {
+                    return;
+                }
+                setMatrixStatus(statusElement, `Retrying line range (${reason})...`, "info");
+                void fetchLineRange({ force: true, recovery: true });
+            }, 120 * runtime.recoveryRetryCount);
+        }
+
+        function applyCachedWindowSnapshot(snapshot, options = {}) {
+            if (!snapshot || typeof snapshot !== "object") {
+                return false;
+            }
+            const basePoints = cloneLinePoints(snapshot.basePoints);
+            const compareSeries = cloneCompareSeries(snapshot.compareSeries);
+            if (basePoints.length < 2) {
+                return false;
+            }
+            runtime.lineStep = Math.max(1, toSafeInteger(snapshot.lineStep, runtime.lineStep));
+            runtime.qualityApplied = normalizeLineQuality(snapshot.qualityApplied || runtime.qualityRequested);
+            runtime.requestedPoints = Math.max(
+                0,
+                toSafeInteger(snapshot.requestedPoints, basePoints.length)
+            );
+            runtime.returnedPoints = Math.max(
+                0,
+                toSafeInteger(snapshot.returnedPoints, basePoints.length)
+            );
+            runtime.failedCompareTargets = Array.isArray(snapshot.failedCompareTargets)
+                ? snapshot.failedCompareTargets.map((entry) => ({
+                    path: String(entry?.path || ""),
+                    label: String(entry?.label || ""),
+                    reason: String(entry?.reason || ""),
+                }))
+                : [];
+            updateRangeLabel(basePoints.length);
+            updateZoomLabel();
+            renderSeries(basePoints, compareSeries);
+            if (options.statusMessage) {
+                setMatrixStatus(statusElement, options.statusMessage, "info");
+            }
+            return true;
+        }
+
         function getSvgDimensions() {
             const rect = canvas.getBoundingClientRect();
             const w = Math.max(300, Math.round(rect.width) || LINE_SVG_WIDTH);
@@ -9565,7 +10017,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             }, LINE_FETCH_DEBOUNCE_MS);
         }
 
-        async function fetchLineRange() {
+        async function fetchLineRange(options = {}) {
             if (runtime.destroyed) {
                 return false;
             }
@@ -9573,6 +10025,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             const requestId = ++runtime.requestSeq;
             const offset = runtime.viewStart;
             const limit = runtime.viewSpan;
+            const forceRequest = options?.force === true;
 
             setMatrixStatus(statusElement, "Loading line range...", "info");
 
@@ -9693,6 +10146,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
                         requestCancelKeys.push(cancelKey);
                         runtime.activeCancelKeys.add(cancelKey);
                         return getFileData(runtime.fileKey, target.path, params, {
+                            force: forceRequest,
                             cancelPrevious: true,
                             cancelKey,
                         });
@@ -9707,6 +10161,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
                 if (!baseOutcome || baseOutcome.status !== "fulfilled") {
                     const baseError = baseOutcome?.reason;
                     if (baseError?.isAbort || baseError?.code === "ABORTED") {
+                        scheduleRecoveryFetch("request interrupted");
                         return false;
                     }
                     throw baseError || new Error("Failed to load base line dataset.");
@@ -9784,6 +10239,26 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
                 runtime.failedCompareTargets = failedTargets;
                 runtime.compareSeries = compareSeries;
 
+                if (baseSeries.points.length < 2 && limit >= 2) {
+                    scheduleRecoveryFetch("empty response");
+                } else {
+                    clearRecoveryRetry();
+                    runtime.recoveryRetryCount = 0;
+                }
+                if (baseSeries.points.length >= 2) {
+                    rememberLineWindowRender(runtime, {
+                        viewStart: offset,
+                        viewSpan: limit,
+                        basePoints: baseSeries.points,
+                        compareSeries,
+                        failedCompareTargets: failedTargets,
+                        lineStep: runtime.lineStep,
+                        qualityApplied: runtime.qualityApplied,
+                        requestedPoints: runtime.requestedPoints,
+                        returnedPoints: runtime.returnedPoints,
+                    });
+                }
+
                 if (Number.isFinite(runtime.pendingZoomFocusX)) {
                     runtime.zoomFocusX = runtime.pendingZoomFocusX;
                 }
@@ -9816,6 +10291,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
                 }
 
                 if (error?.isAbort || error?.code === "ABORTED") {
+                    scheduleRecoveryFetch("request interrupted");
                     return false;
                 }
 
@@ -9823,6 +10299,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
                 runtime.compareSeries = [];
                 updateLegend([], []);
                 setMatrixStatus(statusElement, error?.message || "Failed to load line range.", "error");
+                scheduleRecoveryFetch("load failed");
                 return false;
             } finally {
                 requestCancelKeys.forEach((cancelKey) => {
@@ -10144,6 +10621,11 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             syncWindowControl();
             syncJumpInput();
             persistViewState();
+
+            const cachedWindow = getLineWindowRender(runtime, runtime.viewStart, runtime.viewSpan);
+            if (cachedWindow) {
+                applyCachedWindowSnapshot(cachedWindow);
+            }
 
             if (!changed) {
                 return false;
@@ -10537,6 +11019,12 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             rerenderAfterFullscreenChange();
         }
 
+        function stopShellEventPropagation(event) {
+            if (event?.target instanceof Element && shell.contains(event.target)) {
+                event.stopPropagation();
+            }
+        }
+
         function onFullscreenEsc(event) {
             if (event.key === "Escape" && runtime.fullscreenActive) {
                 event.preventDefault();
@@ -10579,9 +11067,19 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
         updateRangeLabel();
         updateZoomLabel();
         persistViewState();
-        setMatrixStatus(statusElement, "Loading initial line range...", "info");
+        const cachedInitialWindow = getLineWindowRender(runtime);
+        if (cachedInitialWindow) {
+            applyCachedWindowSnapshot(cachedInitialWindow, {
+                statusMessage: "Restored cached line range. Refreshing...",
+            });
+        } else {
+            setMatrixStatus(statusElement, "Loading initial line range...", "info");
+        }
         void fetchLineRange();
 
+        shell.addEventListener("click", stopShellEventPropagation);
+        shell.addEventListener("change", stopShellEventPropagation);
+        shell.addEventListener("input", stopShellEventPropagation);
         canvas.addEventListener("wheel", onWheel, { passive: false });
         canvas.addEventListener("pointerdown", onPointerDown);
         canvas.addEventListener("pointermove", onPointerMove);
@@ -10683,6 +11181,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
                 window.removeEventListener("resize", onResize);
             }
             clearTimeout(resizeTimer);
+            clearRecoveryRetry();
             if (runtime.fetchTimer !== null) {
                 clearTimeout(runtime.fetchTimer);
                 runtime.fetchTimer = null;
@@ -10700,6 +11199,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             canvas.removeEventListener("pointercancel", onPointerCancel);
             canvas.removeEventListener("pointerleave", onPointerLeave);
             canvas.removeEventListener("keydown", onKeyDown);
+            shell.removeEventListener("click", stopShellEventPropagation);
+            shell.removeEventListener("change", stopShellEventPropagation);
+            shell.removeEventListener("input", stopShellEventPropagation);
             if (panToggleButton) {
                 panToggleButton.removeEventListener("click", onTogglePan);
             }
@@ -11231,9 +11733,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
     }
 
     function renderLinkedLineShellMarkup(config) {
+        const inlineShellClass = String(config?.inlineShellClass || "heatmap-inline-line-shell").trim();
         return `
     <div
-      class="line-chart-shell line-chart-shell-full heatmap-inline-line-shell"
+      class="line-chart-shell line-chart-shell-full ${escapeHtml(inlineShellClass)}"
       data-line-shell="true"
       data-line-file-key="${escapeHtml(config.fileKey || "")}"
       data-line-file-etag="${escapeHtml(config.fileEtag || "")}"
@@ -13576,6 +14079,14 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
     if (typeof initializeHeatmapRuntime !== "undefined") {
         moduleState.initializeHeatmapRuntime = initializeHeatmapRuntime;
         global.initializeHeatmapRuntime = initializeHeatmapRuntime;
+    }
+    if (typeof renderLinkedLineShellMarkup !== "undefined") {
+        moduleState.renderLinkedLineShellMarkup = renderLinkedLineShellMarkup;
+        global.renderLinkedLineShellMarkup = renderLinkedLineShellMarkup;
+    }
+    if (typeof renderLinkedLinePanelMarkup !== "undefined") {
+        moduleState.renderLinkedLinePanelMarkup = renderLinkedLinePanelMarkup;
+        global.renderLinkedLinePanelMarkup = renderLinkedLinePanelMarkup;
     }
     if (ns.core && typeof ns.core.registerModule === "function") {
         ns.core.registerModule("components/viewerPanel/runtime/heatmapRuntime");
