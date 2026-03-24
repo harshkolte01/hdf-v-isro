@@ -6,7 +6,7 @@ window.__CONFIG__ = window.__CONFIG__ || {};
 // Production deployments can inject API_BASE_URL here without changing source modules.
 // In Docker/server environments, a web server pre-processing step can replace this value at startup.
 // Must be loaded BEFORE core/config.js which reads window.__CONFIG__.API_BASE_URL.
-window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.53.240.143:5000";
+window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-viewer-backend.vercel.app";
 
 
 
@@ -132,7 +132,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         return;
     }
 
-    var DEFAULT_API_BASE_URL = "http://152.53.240.143:5000";
+    var DEFAULT_API_BASE_URL = "https://hdf-viewer-backend.vercel.app";
 
     // Read runtime config injected by config/runtime-config.js before this script loaded
     var runtimeConfig =

@@ -500,15 +500,21 @@ function init_viewer_render_2() {
         const shape = controls.shape;
         const dims = controls.appliedDisplayDims;
         const fixedIndices = controls.appliedFixedIndices || {};
+        const dimensionLabels = Array.isArray(preview?.dimension_labels) ? preview.dimension_labels : [];
 
         if (!shape.length) {
             return {
                 supported: false,
+                shape: [],
+                displayDims: [],
+                fixedIndices: {},
+                dimensionLabels: [],
                 totalPoints: 0,
                 rowCount: 0,
                 displayDimsParam: "",
                 fixedIndicesParam: "",
                 lineIndex: null,
+                lineDim: null,
                 selectionKey: "",
             };
         }
@@ -525,11 +531,16 @@ function init_viewer_render_2() {
 
             return {
                 supported: totalPoints > 0,
+                shape,
+                displayDims: [],
+                fixedIndices: {},
+                dimensionLabels,
                 totalPoints,
                 rowCount: 1,
                 displayDimsParam: "",
                 fixedIndicesParam: "",
                 lineIndex: null,
+                lineDim: null,
                 selectionKey,
             };
         }
@@ -537,11 +548,16 @@ function init_viewer_render_2() {
         if (!Array.isArray(dims) || dims.length !== 2) {
             return {
                 supported: false,
+                shape,
+                displayDims: [],
+                fixedIndices,
+                dimensionLabels,
                 totalPoints: 0,
                 rowCount: 0,
                 displayDimsParam: "",
                 fixedIndicesParam: "",
                 lineIndex: null,
+                lineDim: null,
                 selectionKey: "",
             };
         }
@@ -563,11 +579,16 @@ function init_viewer_render_2() {
 
         return {
             supported: rowCount > 0 && totalPoints > 0,
+            shape,
+            displayDims: dims,
+            fixedIndices,
+            dimensionLabels,
             totalPoints,
             rowCount,
             displayDimsParam,
             fixedIndicesParam,
             lineIndex,
+            lineDim: lineIndex === null ? null : "row",
             selectionKey,
         };
     }
@@ -1860,9 +1881,14 @@ function init_viewer_render_4() {
         const stagedFixed = controls.stagedFixedIndices || {};
         const dimensionLabels = Array.isArray(preview?.dimension_labels) ? preview.dimension_labels : [];
         const playingFixedDim = toSafeInteger(state.displayConfig?.playingFixedDim, null);
-        const showAutoplayControls = state.displayTab === "heatmap" || state.displayTab === "image";
+        const showAutoplayControls =
+            state.displayTab === "heatmap" ||
+            state.displayTab === "image" ||
+            state.displayTab === "line";
         const canAutoplayHiddenDims =
-            showAutoplayControls && state.heatmapFullEnabled === true;
+            state.displayTab === "line"
+                ? state.lineFullEnabled === true
+                : showAutoplayControls && state.heatmapFullEnabled === true;
 
         if (!appliedDims || !stagedDims) {
             return "";
@@ -2057,7 +2083,10 @@ function init_viewer_render_5() {
     const SHOW_HEATMAP_HISTOGRAM = false;
 
     // Feature flag: when true, hidden-dimension playback controls are rendered inside the Heatmap/Image panel shell.
-    const SHOW_HEATMAP_PANEL_PLAYBACK_CONTROLS = false;
+    const SHOW_HEATMAP_PANEL_PLAYBACK_CONTROLS = true;
+
+    // Feature flag: when true, hidden-dimension playback controls are rendered inside the Line panel shell.
+    const SHOW_LINE_PANEL_PLAYBACK_CONTROLS = true;
 
     // Renders the correct SVG icon for a toolbar button based on its kind string
     function renderToolIcon(kind) {
@@ -2173,6 +2202,24 @@ function init_viewer_render_5() {
                 ? preview.shape.length
                 : 0;
         const baseDtype = preview?.dtype || "";
+        const panelPlaybackControls =
+            SHOW_LINE_PANEL_PLAYBACK_CONTROLS === true &&
+            typeof global.renderFixedIndexControls === "function"
+                ? global.renderFixedIndexControls({
+                    shape: config.shape,
+                    displayDims: config.displayDims,
+                    fixedIndices: config.fixedIndices,
+                    dimensionLabels: config.dimensionLabels,
+                    playingFixedDim: toSafeInteger(state.displayConfig?.playingFixedDim, null),
+                    showPlayback: true,
+                    canAutoplayHiddenDims: state.lineFullEnabled === true,
+                    wrapperClassName: "line-panel-controls",
+                    containerClassName: "dim-sliders line-panel-dim-sliders",
+                    controlClassName: "line-panel-dim-slider",
+                    title: "Slice controls",
+                    titleClassName: "line-panel-controls-title",
+                })
+                : "";
         return `
     <div
       class="line-chart-shell line-chart-shell-full"
@@ -2185,6 +2232,7 @@ function init_viewer_render_5() {
       data-line-selection-key="${escapeHtml(config.selectionKey || "")}"
       data-line-total-points="${config.totalPoints}"
       data-line-index="${config.lineIndex ?? ""}"
+      data-line-dim="${escapeHtml(config.lineDim || "")}"
       data-line-compare-items="${escapeHtml(compareItemsPayload)}"
       data-line-base-shape="${escapeHtml(baseShape)}"
       data-line-base-ndim="${baseNdim}"
@@ -2240,6 +2288,7 @@ function init_viewer_render_5() {
           <span class="line-zoom-label" data-line-range-label="true">Range: --</span>
         </div>
       </div>
+      ${panelPlaybackControls}
       <div class="line-chart-stage">
         <div class="line-chart-canvas" data-line-canvas="true" tabindex="0" role="application" aria-label="Line chart">
           <svg

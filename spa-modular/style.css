@@ -2306,6 +2306,72 @@ body.line-panel-fullscreen-active {
     min-height: 0;
 }
 
+.line-panel-controls {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 0.85rem 0.95rem;
+    border: 1px solid rgba(191, 219, 254, 0.9);
+    border-radius: var(--radius-lg);
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(246, 249, 255, 0.96) 100%);
+    box-shadow: 0 10px 22px rgba(15, 23, 42, 0.06);
+}
+
+.line-panel-controls-title {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.line-panel-dim-sliders {
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 0.75rem;
+}
+
+.line-panel-dim-slider {
+    min-width: 0;
+    padding: 0.75rem;
+    border: 1px solid rgba(203, 213, 225, 0.92);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.line-panel-dim-slider label {
+    margin-bottom: 0.45rem;
+}
+
+.line-panel-dim-slider .slider-row {
+    grid-template-columns: minmax(0, 1fr) 84px;
+    gap: 0.75rem;
+}
+
+.line-panel-dim-slider .slider-row input[type='number'] {
+    width: 100%;
+}
+
+.line-panel-dim-slider .dim-slider-playback {
+    margin-top: 0.6rem;
+    justify-content: flex-end;
+}
+
+.line-panel-dim-slider .dim-playback-buttons {
+    display: none;
+}
+
+.line-chart-shell.is-fullscreen .line-panel-controls {
+    padding: 1rem 1.1rem;
+}
+
+.line-chart-shell.is-fullscreen .line-panel-dim-sliders {
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
 /* Line Chart Toolbar */
 .line-chart-toolbar {
     display: flex;
@@ -2583,6 +2649,19 @@ body.line-panel-fullscreen-active {
 }
 
 @media (max-width: 900px) {
+    .line-panel-dim-sliders {
+        grid-template-columns: 1fr;
+    }
+
+    .line-panel-dim-slider .slider-row {
+        grid-template-columns: 1fr;
+        gap: var(--spacing-sm);
+    }
+
+    .line-panel-dim-slider .dim-slider-playback {
+        flex-wrap: wrap;
+    }
+
     .heatmap-panel-dim-sliders {
         grid-template-columns: 1fr;
     }

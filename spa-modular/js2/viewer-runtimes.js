@@ -155,8 +155,6 @@ function init_viewer_runtimes_2() {
     global.__matrixLinkedPlotCache = MATRIX_LINKED_PLOT_CACHE;
 
     // Returns a cached block or null; block key encodes all offset/limit parameters
-
-    // Returns a cached block or null; block key encodes all offset/limit parameters
     function getCachedMatrixBlock(runtime, rowOffset, colOffset, rowLimit, colLimit) {
         const blockKey = buildMatrixBlockKey(
             runtime.selectionKey,
@@ -6395,9 +6393,13 @@ function init_viewer_runtimes_4() {
         global.initializeHeatmapRuntime = initializeHeatmapRuntime;
     }
 
-    if (typeof initializeHeatmapRuntime !== "undefined") {
-        moduleState.initializeHeatmapRuntime = initializeHeatmapRuntime;
-        global.initializeHeatmapRuntime = initializeHeatmapRuntime;
+    if (typeof renderLinkedLineShellMarkup !== "undefined") {
+        moduleState.renderLinkedLineShellMarkup = renderLinkedLineShellMarkup;
+        global.renderLinkedLineShellMarkup = renderLinkedLineShellMarkup;
+    }
+    if (typeof renderLinkedLinePanelMarkup !== "undefined") {
+        moduleState.renderLinkedLinePanelMarkup = renderLinkedLinePanelMarkup;
+        global.renderLinkedLinePanelMarkup = renderLinkedLinePanelMarkup;
     }
     if (ns.core && typeof ns.core.registerModule === "function") {
         ns.core.registerModule("components/viewerPanel/runtime/heatmapRuntime");
