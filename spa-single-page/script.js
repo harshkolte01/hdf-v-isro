@@ -194,7 +194,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     // String values are static paths; functions accept an object key and return the encoded path.
     var API_ENDPOINTS = Object.freeze({
         FILES: "/files",
-        FILES_REFRESH: "/files/refresh",
         FILE_CHILDREN: function (key) {
             return "/files/" + encodeObjectKeyForPath(key) + "/children";
         },
@@ -1548,18 +1547,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     function getCancelChannel(type, fileKey, path) {
         return `${type}:${fileKey}:${path}`;
     }
-    // Resets all frontend caches; called after a backend refresh flush so stale data is not served
-    function clearFrontendCaches() {
-        frontendCache.files = null;
-        frontendCache.treeChildren.clear();
-        frontendCache.preview.clear();
-        frontendCache.matrixBlocks.clear();
-        frontendCache.lineData.clear();
-        frontendCache.heatmapData.clear();
-        frontendCache.metadata.clear();
-        previewRefreshInFlight.clear();
-        dataRequestsInFlight.clear();
-    }
     // Fetches the file listing; returns cached result unless force=true or cache is empty
     async function getFiles(options = {}) {
         const { force = false, signal } = options;
@@ -1577,15 +1564,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const normalized = assertSuccess(normalizeFilesResponse(payload), "getFiles");
         frontendCache.files = normalized;
         return normalized;
-    }
-    // Triggers a backend cache refresh and then re-fetches the file list; clears all frontend caches first
-    async function refreshFiles(options = {}) {
-        const { signal } = options;
-        const payload = await apiClient.post(API_ENDPOINTS.FILES_REFRESH, null, {}, { signal });
-
-        clearFrontendCaches();
-
-        return payload;
     }
     // Fetches children for a path in the HDF5 tree; per-file and per-etag cache prevents redundant network round-trips
     async function getFileChildren(key, path = "/", options = {}) {
@@ -1896,24 +1874,14 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     }
     const __default_export__ = {
         getFiles,
-        refreshFiles,
         getFileChildren,
         getFileMeta,
         getFilePreview,
         getFileData,
-        clearFrontendCaches,
     };
-    if (typeof clearFrontendCaches !== "undefined") {
-        moduleState.clearFrontendCaches = clearFrontendCaches;
-        global.clearFrontendCaches = clearFrontendCaches;
-    }
     if (typeof getFiles !== "undefined") {
         moduleState.getFiles = getFiles;
         global.getFiles = getFiles;
-    }
-    if (typeof refreshFiles !== "undefined") {
-        moduleState.refreshFiles = refreshFiles;
-        global.refreshFiles = refreshFiles;
     }
     if (typeof getFileChildren !== "undefined") {
         moduleState.getFileChildren = getFileChildren;
@@ -1969,7 +1937,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         files: [],
         loading: false,
         error: null,
-        refreshing: false,
         searchQuery: "",
 
         // --- Selected file ---
@@ -2457,7 +2424,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     // Destructures all dependencies from the shared deps bundle for use inside action functions
     function unpackDeps(deps) {
         const { actions, getState, setState, api, utils } = deps;
-        const { getFiles, refreshFiles, getFileChildren, getFileMeta, getFilePreview } = api;
+        const { getFiles, getFileChildren, getFileMeta, getFilePreview } = api;
         const {
             normalizePath,
             getAncestorPaths,
@@ -2482,7 +2449,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             getState,
             setState,
             getFiles,
-            refreshFiles,
             getFileChildren,
             getFileMeta,
             getFilePreview,
@@ -2510,7 +2476,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             getState,
             setState,
             getFiles,
-            refreshFiles,
             getDisplayConfigDefaults,
         } = unpackDeps(deps);
 
@@ -2536,22 +2501,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                         loading: false,
                         error: error.message || "Failed to load files",
                     });
-                }
-            },
-
-            // Triggers a backend cache refresh, clears frontend caches, then reloads the file list
-            async refreshFileList() {
-                setState({ refreshing: true, error: null });
-
-                try {
-                    await refreshFiles();
-                    await actions.loadFiles();
-                } catch (error) {
-                    setState({
-                        error: error.message || "Failed to refresh files",
-                    });
-                } finally {
-                    setState({ refreshing: false });
                 }
             },
 
@@ -2676,7 +2625,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     // Destructures all needed dependencies from the shared deps bundle
     function unpackDeps(deps) {
         const { actions, getState, setState, api, utils } = deps;
-        const { getFiles, refreshFiles, getFileChildren, getFileMeta, getFilePreview } = api;
+        const { getFiles, getFileChildren, getFileMeta, getFilePreview } = api;
         const {
             normalizePath,
             getAncestorPaths,
@@ -2701,7 +2650,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             getState,
             setState,
             getFiles,
-            refreshFiles,
             getFileChildren,
             getFileMeta,
             getFilePreview,
@@ -2971,7 +2919,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     var moduleState = ensurePath(ns, "state.reducers.viewActions");
     function unpackDeps(deps) {
         const { actions, getState, setState, api, utils } = deps;
-        const { getFiles, refreshFiles, getFileChildren, getFileMeta, getFilePreview } = api;
+        const { getFiles, getFileChildren, getFileMeta, getFilePreview } = api;
         const {
             normalizePath,
             getAncestorPaths,
@@ -2996,7 +2944,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             getState,
             setState,
             getFiles,
-            refreshFiles,
             getFileChildren,
             getFileMeta,
             getFilePreview,
@@ -3245,7 +3192,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     var moduleState = ensurePath(ns, "state.reducers.displayConfigActions");
     function unpackDeps(deps) {
         const { actions, getState, setState, api, utils } = deps;
-        const { getFiles, refreshFiles, getFileChildren, getFileMeta, getFilePreview } = api;
+        const { getFiles, getFileChildren, getFileMeta, getFilePreview } = api;
         const {
             normalizePath,
             getAncestorPaths,
@@ -3270,7 +3217,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             getState,
             setState,
             getFiles,
-            refreshFiles,
             getFileChildren,
             getFileMeta,
             getFilePreview,
@@ -4016,7 +3962,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     var moduleState = ensurePath(ns, "state.reducers.dataActions");
     function unpackDeps(deps) {
         const { actions, getState, setState, api, utils } = deps;
-        const { getFiles, refreshFiles, getFileChildren, getFileMeta, getFilePreview } = api;
+        const { getFiles, getFileChildren, getFileMeta, getFilePreview } = api;
         const {
             normalizePath,
             getAncestorPaths,
@@ -4041,7 +3987,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             getState,
             setState,
             getFiles,
-            refreshFiles,
             getFileChildren,
             getFileMeta,
             getFilePreview,
@@ -4428,7 +4373,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     var moduleState = ensurePath(ns, "state.reducers.compareActions");
     function unpackDeps(deps) {
         const { actions, getState, setState, api, utils } = deps;
-        const { getFiles, refreshFiles, getFileChildren, getFileMeta, getFilePreview } = api;
+        const { getFiles, getFileChildren, getFileMeta, getFilePreview } = api;
         const {
             normalizePath,
             getAncestorPaths,
@@ -4453,7 +4398,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             getState,
             setState,
             getFiles,
-            refreshFiles,
             getFileChildren,
             getFileMeta,
             getFilePreview,
@@ -4787,7 +4731,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         setState,
         api: {
             getFiles,
-            refreshFiles,
             getFileChildren,
             getFileMeta,
             getFilePreview,
@@ -15427,9 +15370,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
         if (state.error) {
             return { tone: "error", message: String(state.error) };
-        }
-        if (state.refreshing) {
-            return { tone: "info", message: "Refreshing files..." };
         }
 
         return { tone: "info", message: "" };

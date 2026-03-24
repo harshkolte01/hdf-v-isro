@@ -194,7 +194,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     // String values are static paths; functions accept an object key and return the encoded path.
     var API_ENDPOINTS = Object.freeze({
         FILES: "/files",
-        FILES_REFRESH: "/files/refresh",
         FILE_CHILDREN: function (key) {
             return "/files/" + encodeObjectKeyForPath(key) + "/children";
         },

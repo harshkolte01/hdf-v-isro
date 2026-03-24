@@ -21,9 +21,6 @@ Endpoints:
   - Uses files cache (`get_files_cache`) with key shape: `files_list:{prefix}:{include_folders}:{max_items}`.
   - Returns both raw file rows and derived folder rows.
 
-- `POST /files/refresh`
-  - Clears files cache.
-
 ## `hdf5.py`
 
 Blueprint: `hdf5_bp`

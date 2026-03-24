@@ -718,18 +718,6 @@ function init_viewer_api_3() {
     function getCancelChannel(type, fileKey, path) {
         return `${type}:${fileKey}:${path}`;
     }
-    // Resets all frontend caches; called after a backend refresh flush so stale data is not served
-    function clearFrontendCaches() {
-        frontendCache.files = null;
-        frontendCache.treeChildren.clear();
-        frontendCache.preview.clear();
-        frontendCache.matrixBlocks.clear();
-        frontendCache.lineData.clear();
-        frontendCache.heatmapData.clear();
-        frontendCache.metadata.clear();
-        previewRefreshInFlight.clear();
-        dataRequestsInFlight.clear();
-    }
     // Fetches the file listing; returns cached result unless force=true or cache is empty
     async function getFiles(options = {}) {
         const { force = false, signal } = options;
@@ -747,15 +735,6 @@ function init_viewer_api_3() {
         const normalized = assertSuccess(normalizeFilesResponse(payload), "getFiles");
         frontendCache.files = normalized;
         return normalized;
-    }
-    // Triggers a backend cache refresh and then re-fetches the file list; clears all frontend caches first
-    async function refreshFiles(options = {}) {
-        const { signal } = options;
-        const payload = await apiClient.post(API_ENDPOINTS.FILES_REFRESH, null, {}, { signal });
-
-        clearFrontendCaches();
-
-        return payload;
     }
     // Fetches children for a path in the HDF5 tree; per-file and per-etag cache prevents redundant network round-trips
     async function getFileChildren(key, path = "/", options = {}) {
@@ -1066,24 +1045,14 @@ function init_viewer_api_3() {
     }
     const __default_export__ = {
         getFiles,
-        refreshFiles,
         getFileChildren,
         getFileMeta,
         getFilePreview,
         getFileData,
-        clearFrontendCaches,
     };
-    if (typeof clearFrontendCaches !== "undefined") {
-        moduleState.clearFrontendCaches = clearFrontendCaches;
-        global.clearFrontendCaches = clearFrontendCaches;
-    }
     if (typeof getFiles !== "undefined") {
         moduleState.getFiles = getFiles;
         global.getFiles = getFiles;
-    }
-    if (typeof refreshFiles !== "undefined") {
-        moduleState.refreshFiles = refreshFiles;
-        global.refreshFiles = refreshFiles;
     }
     if (typeof getFileChildren !== "undefined") {
         moduleState.getFileChildren = getFileChildren;

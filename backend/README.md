@@ -98,8 +98,6 @@ gunicorn wsgi:app --bind 0.0.0.0:5000
   - Health payload with UTC timestamp.
 - `GET /files/`
   - File/folder listing with `prefix`, `include_folders`, `max_items`.
-- `POST /files/refresh`
-  - Clears file listing cache.
 - `GET /files/<key>/children`
   - Children under HDF5 `path` (default `/`).
 - `GET /files/<key>/meta`

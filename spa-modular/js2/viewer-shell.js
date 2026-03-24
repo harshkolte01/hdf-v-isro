@@ -888,9 +888,6 @@ function init_viewer_shell_3() {
         if (state.error) {
             return { tone: "error", message: String(state.error) };
         }
-        if (state.refreshing) {
-            return { tone: "info", message: "Refreshing files..." };
-        }
 
         return { tone: "info", message: "" };
     }

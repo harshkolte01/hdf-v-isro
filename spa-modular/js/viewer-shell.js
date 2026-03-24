@@ -881,9 +881,6 @@
         if (state.error) {
             return { tone: "error", message: String(state.error) };
         }
-        if (state.refreshing) {
-            return { tone: "info", message: "Refreshing files..." };
-        }
 
         return { tone: "info", message: "" };
     }

@@ -1,5 +1,5 @@
 """
-File listing and cache management routes
+File listing routes
 """
 import logging
 from flask import Blueprint, jsonify, request
@@ -121,23 +121,4 @@ def list_files():
         return _error_payload(400, str(e))
     except Exception as e:
         logger.error(f"Error listing files: {e}")
-        return _error_payload(500, 'Internal server error')
-
-
-@files_bp.route('/refresh', methods=['POST'])
-def refresh_files():
-    """Manually refresh the files cache"""
-    try:
-        # Clear the entire files cache so the next GET /files/ re-reads from disk.
-        cache = get_files_cache()
-        cache.clear()
-        
-        logger.info("Files cache manually refreshed")
-        return jsonify({
-            'success': True,
-            'message': 'Cache cleared successfully'
-        }), 200
-        
-    except Exception as e:
-        logger.error(f"Error refreshing cache: {e}")
         return _error_payload(500, 'Internal server error')
