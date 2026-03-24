@@ -7465,6 +7465,13 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
           <span class="line-zoom-label" data-heatmap-range-label="true">Grid: --</span>
         </div>
       </div>
+      <div
+        class="heatmap-runtime-notice"
+        data-heatmap-runtime-notice="true"
+        role="status"
+        aria-live="polite"
+        hidden
+      ></div>
       ${panelPlaybackControls}
       <div class="line-chart-stage">
         <div
@@ -11852,6 +11859,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
         const minStat = shell.querySelector("[data-heatmap-stat-min]");
         const maxStat = shell.querySelector("[data-heatmap-stat-max]");
         const rangeStat = shell.querySelector("[data-heatmap-stat-range]");
+        const runtimeNotice = shell.querySelector("[data-heatmap-runtime-notice]");
         const histogramRoot = shell.querySelector("[data-image-histogram-root]");
         const intensityOverlay = shell.querySelector("[data-heatmap-intensity-overlay]");
         const intensityWindow = shell.querySelector("[data-heatmap-intensity-window]");
@@ -11867,6 +11875,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
         let linkedPlotCloseButton = shell.querySelector("[data-heatmap-plot-close]");
         const statusElement =
             shell.closest(".data-section")?.querySelector("[data-heatmap-status]") || null;
+        const previewLayout = shell.closest(".preview-layout");
 
         if (!canvasHost || !canvas) {
             return;
@@ -11985,6 +11994,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             loadedPhase: "preview",
             fullscreenActive: false,
             loadSequence: 0,
+            initialHighResLoading: false,
+            controlsLocked: false,
+            hasShownFullLoadedNotice: false,
+            noticeTimer: null,
             intensityEnabled: false,
             intensityMin: null,
             intensityMax: null,
@@ -11997,6 +12010,127 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
 
         if (consumeHeatmapFullscreenRestore(selectionKey)) {
             runtime.fullscreenActive = true;
+        }
+
+        function clearRuntimeNoticeTimer() {
+            if (runtime.noticeTimer !== null) {
+                clearTimeout(runtime.noticeTimer);
+                runtime.noticeTimer = null;
+            }
+        }
+
+        function hideRuntimeNotice() {
+            clearRuntimeNoticeTimer();
+            if (!runtimeNotice) {
+                return;
+            }
+            runtimeNotice.hidden = true;
+            runtimeNotice.textContent = "";
+            runtimeNotice.classList.remove("info", "error", "is-visible");
+        }
+
+        function setRuntimeNotice(message, options = {}) {
+            if (!runtimeNotice) {
+                return;
+            }
+            const text = String(message || "").trim();
+            if (!text) {
+                hideRuntimeNotice();
+                return;
+            }
+            const tone = options.tone === "error" ? "error" : "info";
+            const autoHideMs = Math.max(0, Number(options.autoHideMs) || 0);
+            clearRuntimeNoticeTimer();
+            runtimeNotice.textContent = text;
+            runtimeNotice.hidden = false;
+            runtimeNotice.classList.remove("info", "error");
+            runtimeNotice.classList.add("is-visible", tone);
+            if (autoHideMs > 0) {
+                runtime.noticeTimer = setTimeout(() => {
+                    runtime.noticeTimer = null;
+                    if (runtime.destroyed || runtime.initialHighResLoading) {
+                        return;
+                    }
+                    hideRuntimeNotice();
+                }, autoHideMs);
+            }
+        }
+
+        function buildHighResLoadingNoticeText() {
+            return isImageMode ? "Loading full-resolution image..." : "Loading full-resolution heatmap...";
+        }
+
+        function buildHighResLoadedNoticeText() {
+            return isImageMode ? "Image fully loaded." : "Heatmap fully loaded.";
+        }
+
+        function getLockableHeatmapControls() {
+            const lockableElements = [];
+            const lockRoot = previewLayout || shell.closest(".preview-shell") || shell.parentElement;
+            const lockableSelectors = [
+                "[data-display-dim-select]",
+                "[data-fixed-index-range]",
+                "[data-fixed-index-number]",
+                "[data-fixed-index-play-action]",
+                "[data-dim-apply]",
+                "[data-dim-reset]",
+                "[data-heatmap-pan-toggle]",
+                "[data-heatmap-plot-toggle]",
+                "[data-heatmap-intensity-toggle]",
+                "[data-heatmap-zoom-in]",
+                "[data-heatmap-zoom-out]",
+                "[data-heatmap-reset-view]",
+                "[data-heatmap-fullscreen-toggle]",
+                "[data-heatmap-plot-close]",
+                "[data-heatmap-plot-axis]",
+            ];
+            if (!lockRoot) {
+                return lockableElements;
+            }
+            lockRoot.querySelectorAll(lockableSelectors.join(",")).forEach((element) => {
+                if (
+                    element instanceof HTMLButtonElement ||
+                    element instanceof HTMLInputElement ||
+                    element instanceof HTMLSelectElement
+                ) {
+                    lockableElements.push(element);
+                }
+            });
+            return lockableElements;
+        }
+
+        function setHeatmapControlsLocked(locked) {
+            const nextLocked = locked === true;
+            runtime.controlsLocked = nextLocked;
+            shell.classList.toggle("is-highres-loading", nextLocked);
+            canvasHost.classList.toggle("is-disabled", nextLocked);
+            canvasHost.setAttribute("aria-disabled", nextLocked ? "true" : "false");
+            if (nextLocked) {
+                if (!canvasHost.hasAttribute("data-prev-tabindex")) {
+                    canvasHost.setAttribute("data-prev-tabindex", canvasHost.getAttribute("tabindex") || "");
+                }
+                canvasHost.setAttribute("tabindex", "-1");
+            } else if (canvasHost.hasAttribute("data-prev-tabindex")) {
+                const previousTabIndex = canvasHost.getAttribute("data-prev-tabindex");
+                canvasHost.removeAttribute("data-prev-tabindex");
+                if (previousTabIndex) {
+                    canvasHost.setAttribute("tabindex", previousTabIndex);
+                } else {
+                    canvasHost.removeAttribute("tabindex");
+                }
+            }
+
+            getLockableHeatmapControls().forEach((control) => {
+                if (nextLocked) {
+                    if (!control.hasAttribute("data-runtime-prev-disabled")) {
+                        control.setAttribute("data-runtime-prev-disabled", control.disabled ? "1" : "0");
+                    }
+                    control.disabled = true;
+                } else if (control.hasAttribute("data-runtime-prev-disabled")) {
+                    control.disabled = control.getAttribute("data-runtime-prev-disabled") === "1";
+                    control.removeAttribute("data-runtime-prev-disabled");
+                }
+            });
         }
 
         function updateLabels() {
@@ -12344,6 +12478,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             runtime.maxSizeClamped = cachedData.maxSizeClamped === true;
             runtime.effectiveMaxSize = Number(cachedData.effectiveMaxSize) || HEATMAP_MAX_SIZE;
             runtime.loadedPhase = cachedData.phase === "highres" ? "highres" : "preview";
+            runtime.hasShownFullLoadedNotice = runtime.loadedPhase === "highres";
 
             // View cache stores interaction state (zoom/pan/plot mode/selection), separate from pixel data cache.
             const cachedView = HEATMAP_SELECTION_VIEW_CACHE.get(runtime.cacheKey);
@@ -13314,39 +13449,75 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
         async function loadHighResHeatmap(options = {}) {
             const preserveViewState = options && options.preserveViewState === true;
             const forceFullLoad = options && options.forceFullLoad === true;
+            const lockControls = options && options.lockControls === true;
+            const announceLoaded = options && options.announceLoaded === true;
             const loadToken = ++runtime.loadSequence;
-            if (forceFullLoad) {
-                const fullResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
-                    preserveViewState,
-                    loadToken,
-                });
-                return fullResult.loaded === true;
+            let loaded = false;
+            if (lockControls) {
+                runtime.initialHighResLoading = true;
+                setHeatmapControlsLocked(true);
+                setRuntimeNotice(buildHighResLoadingNoticeText(), { tone: "info" });
             }
-            // Progressive loading: fast preview first (256), then full resolution (1024)
-            const PREVIEW_SIZE = 256;
-            const previewResult = await fetchHeatmapAtSize(PREVIEW_SIZE, "Loading heatmap preview...", {
-                preserveViewState,
-                loadToken,
-            });
-            if (runtime.destroyed || loadToken !== runtime.loadSequence) return false;
-            if (previewResult.loaded && HEATMAP_MAX_SIZE > PREVIEW_SIZE) {
-                // Small delay so the user sees the preview before the full load starts
-                await new Promise((r) => setTimeout(r, 50));
-                if (runtime.destroyed || loadToken !== runtime.loadSequence) return false;
-                const fullResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
+            try {
+                if (forceFullLoad) {
+                    const fullResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
+                        preserveViewState,
+                        loadToken,
+                    });
+                    loaded = fullResult.loaded === true;
+                    return loaded;
+                }
+                // Progressive loading: fast preview first (256), then full resolution (1024)
+                const PREVIEW_SIZE = 256;
+                const previewResult = await fetchHeatmapAtSize(PREVIEW_SIZE, "Loading heatmap preview...", {
                     preserveViewState,
                     loadToken,
                 });
-                return fullResult.loaded === true;
-            } else if (!previewResult.loaded) {
-                // Fallback: try full size directly
-                const fallbackResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading high-res heatmap...", {
-                    preserveViewState,
-                    loadToken,
-                });
-                return fallbackResult.loaded === true;
+                if (runtime.destroyed || loadToken !== runtime.loadSequence) {
+                    loaded = false;
+                    return false;
+                }
+                if (previewResult.loaded && HEATMAP_MAX_SIZE > PREVIEW_SIZE) {
+                    // Small delay so the user sees the preview before the full load starts
+                    await new Promise((r) => setTimeout(r, 50));
+                    if (runtime.destroyed || loadToken !== runtime.loadSequence) {
+                        loaded = false;
+                        return false;
+                    }
+                    const fullResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
+                        preserveViewState,
+                        loadToken,
+                    });
+                    loaded = fullResult.loaded === true;
+                    return loaded;
+                } else if (!previewResult.loaded) {
+                    // Fallback: try full size directly
+                    const fallbackResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading high-res heatmap...", {
+                        preserveViewState,
+                        loadToken,
+                    });
+                    loaded = fallbackResult.loaded === true;
+                    return loaded;
+                }
+                loaded = previewResult.loaded === true;
+                return loaded;
+            } finally {
+                if (lockControls) {
+                    runtime.initialHighResLoading = false;
+                    setHeatmapControlsLocked(false);
+                    if (runtime.destroyed) {
+                        hideRuntimeNotice();
+                    } else if (loaded && announceLoaded && !runtime.hasShownFullLoadedNotice) {
+                        runtime.hasShownFullLoadedNotice = true;
+                        setRuntimeNotice(buildHighResLoadedNoticeText(), {
+                            tone: "info",
+                            autoHideMs: 2200,
+                        });
+                    } else {
+                        hideRuntimeNotice();
+                    }
+                }
             }
-            return previewResult.loaded === true;
         }
 
         async function exportCsvDisplayed() {
@@ -13966,7 +14137,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
         if (!restoredFromCache) {
             updateLabels();
             renderHeatmap();
-            void loadHighResHeatmap();
+            void loadHighResHeatmap({
+                lockControls: true,
+                announceLoaded: true,
+            });
         }
 
         canvas.addEventListener("wheel", onWheel, { passive: false });
@@ -14060,6 +14234,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
             shell.removeEventListener("click", onShellClick);
             document.removeEventListener("keydown", onFullscreenEsc);
             stopIntensityDrag();
+            hideRuntimeNotice();
             if (runtime.fullscreenActive) {
                 rememberHeatmapFullscreen(runtime.selectionKey);
             }

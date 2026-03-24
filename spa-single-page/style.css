@@ -2532,9 +2532,16 @@ body.line-panel-fullscreen-active {
     color: var(--primary);
 }
 
-.line-tool-btn:hover {
+.line-tool-btn:hover:not(:disabled) {
     border-color: var(--primary);
     color: var(--primary);
+}
+
+.line-tool-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+    color: var(--text-secondary);
+    border-color: rgba(203, 213, 225, 0.92);
 }
 
 .line-zoom-label {
@@ -2646,6 +2653,31 @@ body.line-panel-fullscreen-active {
     align-items: center;
 }
 
+.heatmap-runtime-notice {
+    display: flex;
+    align-items: center;
+    min-height: 2.5rem;
+    margin: -0.1rem 0 0.2rem;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid rgba(191, 219, 254, 0.95);
+    border-radius: var(--radius-md);
+    background: rgba(239, 246, 255, 0.95);
+    color: var(--primary);
+    font-size: 0.82rem;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.heatmap-runtime-notice[hidden] {
+    display: none !important;
+}
+
+.heatmap-runtime-notice.error {
+    border-color: rgba(248, 113, 113, 0.42);
+    background: var(--error-bg);
+    color: var(--error);
+}
+
 .heatmap-panel-controls {
     position: relative;
     z-index: 1;
@@ -2744,6 +2776,11 @@ body.line-panel-fullscreen-active {
     position: relative;
     height: var(--heatmap-canvas-height);
     cursor: crosshair;
+}
+
+.heatmap-chart-canvas.is-disabled {
+    pointer-events: none;
+    opacity: 0.58;
 }
 
 .heatmap-preview-svg {
