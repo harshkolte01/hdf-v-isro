@@ -16349,20 +16349,19 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
     `;
     }
 
-    function renderMissingFilePanel(exampleUrl) {
-        var esc = resolveEscapeHtml();
-        var example = exampleUrl || "?file=<url-encoded-object-key>";
+    var MISSING_FILE_VIEWER_MESSAGE = "Select the h5 file to open viewer.";
+
+    function renderMissingFilePanel(_exampleUrl) {
         return `
       <div class="panel-state">
-        <div class="state-title">Missing <code>file</code> query parameter</div>
-        <div class="state-text">Open viewer using <code>${esc(example)}</code>.</div>
+        <div class="state-text">${MISSING_FILE_VIEWER_MESSAGE}</div>
       </div>
     `;
     }
 
     function resolveTreeStatus(state, missingFile) {
         if (missingFile) {
-            return { tone: "info", message: "Provide file query parameter to load tree." };
+            return { tone: "info", message: "" };
         }
         if (!state.selectedFile) {
             return { tone: "info", message: "No active file selected." };
@@ -16387,7 +16386,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
         if (missingFile) {
             return {
                 tone: "info",
-                message: "Viewer is blocked until a file key is provided.",
+                message: "",
             };
         }
 
@@ -16405,7 +16404,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
         if (missingFile) {
             return {
                 tone: "info",
-                message: "Metadata loading is disabled until file is provided.",
+                message: "",
             };
         }
 
@@ -16422,8 +16421,8 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-
     function resolveGlobalStatus(state, missingFile) {
         if (missingFile) {
             return {
-                tone: "error",
-                message: "Viewer is blocked until ?file= is provided.",
+                tone: "info",
+                message: "",
             };
         }
 
