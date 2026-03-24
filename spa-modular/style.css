@@ -1995,6 +1995,97 @@
     text-align: center;
 }
 
+.matrix-cell-trigger {
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+
+.matrix-cell-header.matrix-cell-trigger:hover,
+.matrix-cell-index.matrix-cell-trigger:hover {
+    background: rgba(37, 99, 235, 0.12);
+    color: var(--primary);
+}
+
+.matrix-cell-trigger:focus-visible {
+    outline: 2px solid rgba(37, 99, 235, 0.32);
+    outline-offset: -2px;
+    z-index: 2;
+}
+
+.matrix-cell-header.matrix-cell-trigger.is-selected,
+.matrix-cell-index.matrix-cell-trigger.is-selected {
+    background: rgba(37, 99, 235, 0.16);
+    color: var(--primary);
+}
+
+.matrix-linked-plot {
+    --matrix-linked-line-height: clamp(220px, calc(100dvh - 520px), 320px);
+    border-top: 1px solid var(--border);
+    padding: var(--spacing-sm);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm);
+    overflow-anchor: none;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(246, 249, 255, 0.98));
+}
+
+.matrix-linked-plot[hidden] {
+    display: none !important;
+}
+
+.matrix-linked-plot-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-sm);
+    flex-wrap: wrap;
+}
+
+.matrix-linked-plot-title {
+    font-size: 0.76rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    letter-spacing: 0.02em;
+}
+
+.matrix-linked-plot-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+}
+
+.matrix-linked-plot-status {
+    margin: 0;
+}
+
+.matrix-linked-plot-shell-host {
+    width: 100%;
+    overflow: hidden;
+    overflow-anchor: none;
+}
+
+.matrix-linked-plot-shell-host>.line-chart-shell {
+    margin: 0;
+}
+
+.matrix-inline-line-shell {
+    margin: 0;
+    min-height: 0;
+    overflow-anchor: none;
+}
+
+.matrix-inline-line-shell .line-chart-canvas {
+    height: var(--matrix-linked-line-height);
+    overflow-anchor: none;
+}
+
+.matrix-inline-line-shell .line-chart-stage {
+    overflow: hidden;
+    overflow-anchor: none;
+}
+
 .preview-layout.is-line .preview-content {
     background: transparent;
     border: none;
@@ -2279,9 +2370,16 @@ body.line-panel-fullscreen-active {
     color: var(--primary);
 }
 
-.line-tool-btn:hover {
+.line-tool-btn:hover:not(:disabled) {
     border-color: var(--primary);
     color: var(--primary);
+}
+
+.line-tool-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+    color: var(--text-secondary);
+    border-color: rgba(203, 213, 225, 0.92);
 }
 
 .line-zoom-label {
@@ -2393,6 +2491,31 @@ body.line-panel-fullscreen-active {
     align-items: center;
 }
 
+.heatmap-runtime-notice {
+    display: flex;
+    align-items: center;
+    min-height: 2.5rem;
+    margin: -0.1rem 0 0.2rem;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid rgba(191, 219, 254, 0.95);
+    border-radius: var(--radius-md);
+    background: rgba(239, 246, 255, 0.95);
+    color: var(--primary);
+    font-size: 0.82rem;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.heatmap-runtime-notice[hidden] {
+    display: none !important;
+}
+
+.heatmap-runtime-notice.error {
+    border-color: rgba(248, 113, 113, 0.42);
+    background: var(--error-bg);
+    color: var(--error);
+}
+
 .heatmap-panel-controls {
     position: relative;
     z-index: 1;
@@ -2478,6 +2601,11 @@ body.line-panel-fullscreen-active {
     position: relative;
     height: var(--heatmap-canvas-height);
     cursor: crosshair;
+}
+
+.heatmap-chart-canvas.is-disabled {
+    pointer-events: none;
+    opacity: 0.58;
 }
 
 .heatmap-preview-svg {

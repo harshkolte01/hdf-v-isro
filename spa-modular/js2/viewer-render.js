@@ -2418,6 +2418,30 @@ function init_viewer_render_5() {
           style="width:${config.cols * MATRIX_COL_WIDTH}px;height:${config.rows * MATRIX_ROW_HEIGHT}px;"
         ></div>
       </div>
+      <div class="matrix-linked-plot" data-matrix-linked-plot="true" hidden>
+        <div class="matrix-linked-plot-header">
+          <div class="matrix-linked-plot-title" data-matrix-linked-title="true">
+            Plot mode: click a row or column header to inspect its profile.
+          </div>
+          <div class="matrix-linked-plot-actions">
+            <button
+              type="button"
+              class="line-tool-btn line-tool-btn-icon"
+              data-matrix-plot-close="true"
+              aria-label="Close matrix plot"
+              title="Close plot"
+            >
+              <svg class="line-tool-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M4 4l8 8M12 4l-8 8"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="data-status info matrix-linked-plot-status" data-line-status="true">
+          Click a row or column header to plot.
+        </div>
+        <div class="matrix-linked-plot-shell-host" data-matrix-linked-shell-host="true"></div>
+      </div>
     </div>
   `;
     }
@@ -2432,7 +2456,7 @@ function init_viewer_render_5() {
             : config.rows <= 0 || config.cols <= 0
                 ? "No values available for the selected display dims."
                 : isEnabled
-                    ? "Streaming blocks as you scroll."
+                    ? "Streaming blocks as you scroll. Click a row or column header to plot."
                     : "Preview mode. Click Load full view.";
         const statusTone = !config.supported || config.rows <= 0 || config.cols <= 0 ? "error" : "info";
         const statusClass = `data-status ${statusTone === "error" ? "error" : "info"}`;
@@ -2533,6 +2557,13 @@ function init_viewer_render_5() {
           <span class="line-zoom-label" data-heatmap-range-label="true">Grid: --</span>
         </div>
       </div>
+      <div
+        class="heatmap-runtime-notice"
+        data-heatmap-runtime-notice="true"
+        role="status"
+        aria-live="polite"
+        hidden
+      ></div>
       ${panelPlaybackControls}
       <div class="line-chart-stage">
         <div
@@ -2646,7 +2677,7 @@ function init_viewer_render_5() {
         >
           Load high-res
         </button>
-        <span class="${statusClass}" data-heatmap-status="true">${escapeHtml(statusText)}</span>
+        <!-- <span class="${statusClass}" data-heatmap-status="true">${escapeHtml(statusText)}</span> -->
       </div>
       ${content}
     </div>
@@ -2690,7 +2721,7 @@ function init_viewer_render_5() {
         >
           Load high-res
         </button>
-        <span class="${statusClass}" data-heatmap-status="true">${escapeHtml(statusText)}</span>
+        <!-- <span class="${statusClass}" data-heatmap-status="true">${escapeHtml(statusText)}</span> -->
       </div>
       ${content}
     </div>

@@ -534,8 +534,16 @@
     var disposeViewerViewBindings = null;
     var eventRoot = null;
     var eventActions = {};
+    var disposeSidebarResizeBindings = null;
+    var sidebarResizeRoot = null;
     // Guards against concurrent export button presses triggering duplicate downloads
     var exportRunning = false;
+    var SIDEBAR_RESIZE_STORAGE_KEY = "hdf-viewer.sidebar-width";
+    var SIDEBAR_RESIZE_MIN_RATIO = 0.15;
+    var SIDEBAR_RESIZE_MAX_RATIO = 0.42;
+    var SIDEBAR_RESIZE_MIN_PX = 240;
+    var SIDEBAR_RESIZE_MAX_PX = 680;
+    var SIDEBAR_RESIZE_STEP_PX = 20;
 
     // Returns escapeHtml from utils/format.js for XSS-safe rendering; falls back to an inline implementation
     function resolveEscapeHtml() {
@@ -592,6 +600,16 @@
         eventRoot = null;
         eventActions = {};
         exportRunning = false;
+
+        if (typeof disposeSidebarResizeBindings === "function") {
+            try {
+                disposeSidebarResizeBindings();
+            } catch (_error) {
+                // ignore cleanup errors from detached nodes
+            }
+        }
+        disposeSidebarResizeBindings = null;
+        sidebarResizeRoot = null;
 
         if (typeof clearSidebarTreeBindings === "function") {
             clearSidebarTreeBindings();
@@ -800,20 +818,19 @@
     `;
     }
 
-    function renderMissingFilePanel(exampleUrl) {
-        var esc = resolveEscapeHtml();
-        var example = exampleUrl || "?file=<url-encoded-object-key>";
+    var MISSING_FILE_VIEWER_MESSAGE = "Select the h5 file to open viewer.";
+
+    function renderMissingFilePanel(_exampleUrl) {
         return `
       <div class="panel-state">
-        <div class="state-title">Missing <code>file</code> query parameter</div>
-        <div class="state-text">Open viewer using <code>${esc(example)}</code>.</div>
+        <div class="state-text">${MISSING_FILE_VIEWER_MESSAGE}</div>
       </div>
     `;
     }
 
     function resolveTreeStatus(state, missingFile) {
         if (missingFile) {
-            return { tone: "info", message: "Provide file query parameter to load tree." };
+            return { tone: "info", message: "" };
         }
         if (!state.selectedFile) {
             return { tone: "info", message: "No active file selected." };
@@ -838,7 +855,7 @@
         if (missingFile) {
             return {
                 tone: "info",
-                message: "Viewer is blocked until a file key is provided.",
+                message: "",
             };
         }
 
@@ -856,7 +873,7 @@
         if (missingFile) {
             return {
                 tone: "info",
-                message: "Metadata loading is disabled until file is provided.",
+                message: "",
             };
         }
 
@@ -873,8 +890,8 @@
     function resolveGlobalStatus(state, missingFile) {
         if (missingFile) {
             return {
-                tone: "error",
-                message: "Viewer is blocked until ?file= is provided.",
+                tone: "info",
+                message: "",
             };
         }
 
@@ -1075,6 +1092,293 @@
 
     function getFullscreenTarget(root) {
         return document.getElementById("viewer-app") || root || document.documentElement;
+    }
+
+    function getSidebarResizeElements(root) {
+        var rootDoc = root && root.ownerDocument ? root.ownerDocument : document;
+        return {
+            app: rootDoc.getElementById("viewer-app"),
+            sidebar: rootDoc.getElementById("viewer-sidebar"),
+            handle: rootDoc.getElementById("viewer-sidebar-resizer"),
+        };
+    }
+
+    function isSidebarResizeDesktopViewport() {
+        return typeof window !== "undefined" && window.innerWidth > 1024;
+    }
+
+    function getSidebarResizeBounds(viewportWidth) {
+        var safeViewport = Math.max(1, Math.round(Number(viewportWidth) || 0));
+        var minWidth = Math.max(SIDEBAR_RESIZE_MIN_PX, Math.round(safeViewport * SIDEBAR_RESIZE_MIN_RATIO));
+        var maxWidth = Math.max(
+            minWidth,
+            Math.min(SIDEBAR_RESIZE_MAX_PX, Math.round(safeViewport * SIDEBAR_RESIZE_MAX_RATIO))
+        );
+        return {
+            min: minWidth,
+            max: maxWidth,
+        };
+    }
+
+    function clampSidebarWidth(width, viewportWidth) {
+        var bounds = getSidebarResizeBounds(viewportWidth);
+        var safeWidth = Math.round(Number(width) || bounds.min);
+        return Math.max(bounds.min, Math.min(bounds.max, safeWidth));
+    }
+
+    function getCurrentSidebarWidth(root) {
+        var elements = getSidebarResizeElements(root);
+        return elements.sidebar ? Math.round(elements.sidebar.getBoundingClientRect().width || 0) : 0;
+    }
+
+    function readStoredSidebarWidth() {
+        try {
+            var raw = window.localStorage.getItem(SIDEBAR_RESIZE_STORAGE_KEY);
+            var parsed = Number(raw);
+            return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    function persistSidebarWidth(width) {
+        try {
+            window.localStorage.setItem(SIDEBAR_RESIZE_STORAGE_KEY, String(Math.round(width)));
+        } catch (_error) {
+            // ignore storage failures
+        }
+    }
+
+    function clearStoredSidebarWidth() {
+        try {
+            window.localStorage.removeItem(SIDEBAR_RESIZE_STORAGE_KEY);
+        } catch (_error) {
+            // ignore storage failures
+        }
+    }
+
+    function setSidebarWidth(root, width, options) {
+        var settings = options && typeof options === "object" ? options : {};
+        var elements = getSidebarResizeElements(root);
+        if (!elements.app) {
+            return null;
+        }
+        var viewportWidth =
+            elements.app.clientWidth ||
+            (typeof window !== "undefined" ? window.innerWidth : 0) ||
+            SIDEBAR_RESIZE_MIN_PX;
+        var nextWidth = clampSidebarWidth(width, viewportWidth);
+        elements.app.style.setProperty("--sidebar-width", nextWidth + "px");
+        if (settings.persist === true) {
+            persistSidebarWidth(nextWidth);
+        }
+        return nextWidth;
+    }
+
+    function resetSidebarWidth(root) {
+        var elements = getSidebarResizeElements(root);
+        if (!elements.app) {
+            return;
+        }
+        elements.app.style.removeProperty("--sidebar-width");
+        clearStoredSidebarWidth();
+    }
+
+    function syncSidebarResizeHandle(root) {
+        var elements = getSidebarResizeElements(root);
+        var app = elements.app;
+        var handle = elements.handle;
+        if (!app || !handle) {
+            return;
+        }
+        var resizeEnabled = isSidebarResizeDesktopViewport() && !app.classList.contains("sidebar-collapsed");
+        var viewportWidth =
+            app.clientWidth ||
+            (typeof window !== "undefined" ? window.innerWidth : 0) ||
+            SIDEBAR_RESIZE_MIN_PX;
+        var bounds = getSidebarResizeBounds(viewportWidth);
+        var width = clampSidebarWidth(getCurrentSidebarWidth(root), viewportWidth);
+        handle.classList.toggle("is-disabled", !resizeEnabled);
+        handle.setAttribute("aria-hidden", resizeEnabled ? "false" : "true");
+        handle.setAttribute("aria-valuemin", String(bounds.min));
+        handle.setAttribute("aria-valuemax", String(bounds.max));
+        handle.setAttribute("aria-valuenow", String(width));
+        handle.setAttribute("aria-valuetext", width + " pixels");
+        handle.tabIndex = resizeEnabled ? 0 : -1;
+    }
+
+    function bindSidebarResizeHandle(root) {
+        if (!root) {
+            return;
+        }
+
+        if (sidebarResizeRoot === root && typeof disposeSidebarResizeBindings === "function") {
+            syncSidebarResizeHandle(root);
+            return;
+        }
+
+        if (typeof disposeSidebarResizeBindings === "function") {
+            disposeSidebarResizeBindings();
+        }
+
+        sidebarResizeRoot = root;
+        var elements = getSidebarResizeElements(root);
+        var app = elements.app;
+        var handle = elements.handle;
+        if (!app || !handle) {
+            disposeSidebarResizeBindings = null;
+            return;
+        }
+
+        var activePointerId = null;
+        var dragStartX = 0;
+        var dragStartWidth = 0;
+        var storedWidth = readStoredSidebarWidth();
+        if (storedWidth !== null) {
+            setSidebarWidth(root, storedWidth, { persist: false });
+        }
+        syncSidebarResizeHandle(root);
+
+        function stopResize(persistWidth) {
+            if (activePointerId !== null && handle.hasPointerCapture && handle.hasPointerCapture(activePointerId)) {
+                try {
+                    handle.releasePointerCapture(activePointerId);
+                } catch (_error) {
+                    // ignore pointer release failures
+                }
+            }
+            if (persistWidth === true) {
+                persistSidebarWidth(getCurrentSidebarWidth(root));
+            }
+            activePointerId = null;
+            app.classList.remove("is-sidebar-resizing");
+            if (document.body) {
+                document.body.classList.remove("sidebar-resizing");
+            }
+            handle.classList.remove("is-active");
+            syncSidebarResizeHandle(root);
+        }
+
+        function onPointerMove(event) {
+            if (activePointerId === null || event.pointerId !== activePointerId) {
+                return;
+            }
+            event.preventDefault();
+            var deltaX = event.clientX - dragStartX;
+            setSidebarWidth(root, dragStartWidth + deltaX, { persist: false });
+            syncSidebarResizeHandle(root);
+        }
+
+        function onPointerUp(event) {
+            if (activePointerId === null || event.pointerId !== activePointerId) {
+                return;
+            }
+            event.preventDefault();
+            stopResize(true);
+        }
+
+        function onPointerCancel(event) {
+            if (activePointerId === null || event.pointerId !== activePointerId) {
+                return;
+            }
+            stopResize(false);
+        }
+
+        function onPointerDown(event) {
+            if (!isSidebarResizeDesktopViewport() || app.classList.contains("sidebar-collapsed")) {
+                return;
+            }
+            if (event.button !== 0) {
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+            activePointerId = event.pointerId;
+            dragStartX = event.clientX;
+            dragStartWidth = getCurrentSidebarWidth(root);
+            app.classList.add("is-sidebar-resizing");
+            if (document.body) {
+                document.body.classList.add("sidebar-resizing");
+            }
+            handle.classList.add("is-active");
+            if (handle.setPointerCapture) {
+                try {
+                    handle.setPointerCapture(event.pointerId);
+                } catch (_error) {
+                    // ignore pointer capture failures
+                }
+            }
+        }
+
+        function onKeyDown(event) {
+            if (!isSidebarResizeDesktopViewport() || app.classList.contains("sidebar-collapsed")) {
+                return;
+            }
+            var viewportWidth =
+                app.clientWidth ||
+                (typeof window !== "undefined" ? window.innerWidth : 0) ||
+                SIDEBAR_RESIZE_MIN_PX;
+            var bounds = getSidebarResizeBounds(viewportWidth);
+            var currentWidth = getCurrentSidebarWidth(root);
+            if (event.key === "ArrowLeft") {
+                event.preventDefault();
+                setSidebarWidth(root, currentWidth - SIDEBAR_RESIZE_STEP_PX, { persist: true });
+                syncSidebarResizeHandle(root);
+                return;
+            }
+            if (event.key === "ArrowRight") {
+                event.preventDefault();
+                setSidebarWidth(root, currentWidth + SIDEBAR_RESIZE_STEP_PX, { persist: true });
+                syncSidebarResizeHandle(root);
+                return;
+            }
+            if (event.key === "Home") {
+                event.preventDefault();
+                setSidebarWidth(root, bounds.min, { persist: true });
+                syncSidebarResizeHandle(root);
+                return;
+            }
+            if (event.key === "End") {
+                event.preventDefault();
+                setSidebarWidth(root, bounds.max, { persist: true });
+                syncSidebarResizeHandle(root);
+            }
+        }
+
+        function onDoubleClick(event) {
+            if (!isSidebarResizeDesktopViewport() || app.classList.contains("sidebar-collapsed")) {
+                return;
+            }
+            event.preventDefault();
+            resetSidebarWidth(root);
+            syncSidebarResizeHandle(root);
+        }
+
+        function onWindowResize() {
+            if (app.style.getPropertyValue("--sidebar-width")) {
+                setSidebarWidth(root, getCurrentSidebarWidth(root), { persist: false });
+            }
+            syncSidebarResizeHandle(root);
+        }
+
+        handle.addEventListener("pointerdown", onPointerDown);
+        handle.addEventListener("keydown", onKeyDown);
+        handle.addEventListener("dblclick", onDoubleClick);
+        window.addEventListener("pointermove", onPointerMove);
+        window.addEventListener("pointerup", onPointerUp);
+        window.addEventListener("pointercancel", onPointerCancel);
+        window.addEventListener("resize", onWindowResize);
+
+        disposeSidebarResizeBindings = function disposeSidebarResizeBindingsImpl() {
+            stopResize(false);
+            handle.removeEventListener("pointerdown", onPointerDown);
+            handle.removeEventListener("keydown", onKeyDown);
+            handle.removeEventListener("dblclick", onDoubleClick);
+            window.removeEventListener("pointermove", onPointerMove);
+            window.removeEventListener("pointerup", onPointerUp);
+            window.removeEventListener("pointercancel", onPointerCancel);
+            window.removeEventListener("resize", onWindowResize);
+        };
     }
 
     function updateFullscreenButton(root) {
@@ -1305,6 +1609,8 @@
 
         refreshExportButtonState(safeRoot);
         updateFullscreenButton(safeRoot);
+        bindSidebarResizeHandle(safeRoot);
+        syncSidebarResizeHandle(safeRoot);
 
         if (typeof bindSidebarTreeEvents === "function") {
             bindSidebarTreeEvents(safeRoot, eventActions);

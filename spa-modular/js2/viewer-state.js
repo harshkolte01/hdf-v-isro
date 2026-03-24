@@ -1408,6 +1408,30 @@ function init_viewer_state_6() {
             return runtimeApi && typeof runtimeApi.updateSelection === "function" ? runtimeApi : null;
         }
 
+        function resolveActiveLineRuntimeApi(snapshot) {
+            if (typeof document === "undefined") {
+                return null;
+            }
+
+            const shell = document.querySelector(
+                '[data-line-shell]:not(.heatmap-inline-line-shell):not(.matrix-inline-line-shell)'
+            );
+            if (!shell) {
+                return null;
+            }
+
+            if ((shell.dataset.lineFileKey || "") !== String(snapshot.selectedFile || "")) {
+                return null;
+            }
+
+            if ((shell.dataset.linePath || "/") !== String(snapshot.selectedPath || "/")) {
+                return null;
+            }
+
+            const runtimeApi = shell.__lineRuntimeApi;
+            return runtimeApi && typeof runtimeApi.updateSelection === "function" ? runtimeApi : null;
+        }
+
         function clearFixedIndexPlaybackTimer() {
             if (fixedIndexPlaybackTimer !== null) {
                 clearTimeout(fixedIndexPlaybackTimer);
@@ -1528,17 +1552,30 @@ function init_viewer_state_6() {
 
         function resolveFixedIndexPlaybackContext(snapshot, requestedDim = null) {
             const activeTab = snapshot.displayTab;
+            const isHeatmapPlaybackTab = activeTab === "heatmap" || activeTab === "image";
+            const isLinePlaybackTab = activeTab === "line";
             if (
                 snapshot.route !== "viewer" ||
                 snapshot.viewMode !== "display" ||
                 snapshot.selectedNodeType !== "dataset" ||
-                (activeTab !== "heatmap" && activeTab !== "image") ||
-                snapshot.heatmapFullEnabled !== true
+                (!isHeatmapPlaybackTab && !isLinePlaybackTab)
             ) {
                 return null;
             }
 
-            const runtimeApi = resolveActiveHeatmapRuntimeApi(snapshot);
+            let runtimeApi = null;
+            if (isLinePlaybackTab) {
+                if (snapshot.lineFullEnabled !== true) {
+                    return null;
+                }
+                runtimeApi = resolveActiveLineRuntimeApi(snapshot);
+            } else {
+                if (snapshot.heatmapFullEnabled !== true) {
+                    return null;
+                }
+                runtimeApi = resolveActiveHeatmapRuntimeApi(snapshot);
+            }
+
             if (!runtimeApi) {
                 return null;
             }
@@ -1657,6 +1694,57 @@ function init_viewer_state_6() {
                 fixedIndices,
                 displayDimsParam,
                 fixedIndicesParam,
+                selectionKey,
+            };
+        }
+
+        function buildLineLiveSelection(snapshot, displayDims, fixedIndices) {
+            const displayDimsParam = buildDisplayDimsParam(displayDims) || "";
+            const fixedIndicesParam = buildFixedIndicesParam(fixedIndices) || "";
+            const nextState = {
+                ...snapshot,
+                displayConfig: {
+                    ...(snapshot.displayConfig || getDisplayConfigDefaults()),
+                    displayDims,
+                    fixedIndices,
+                    stagedDisplayDims: displayDims,
+                    stagedFixedIndices: fixedIndices,
+                },
+            };
+            const lineConfig =
+                typeof global.resolveLineRuntimeConfig === "function"
+                    ? global.resolveLineRuntimeConfig(nextState, snapshot.preview)
+                    : null;
+            const lineIndex = toSafeInteger(lineConfig?.lineIndex, null);
+            const lineDim = lineIndex === null ? null : String(lineConfig?.lineDim || "row");
+            const totalPoints = Math.max(0, toSafeInteger(lineConfig?.totalPoints, 0));
+            const selectionKey =
+                typeof lineConfig?.selectionKey === "string" && lineConfig.selectionKey
+                    ? lineConfig.selectionKey
+                    : typeof global.buildLineSelectionKey === "function"
+                        ? global.buildLineSelectionKey(
+                            snapshot.selectedFile,
+                            snapshot.selectedPath,
+                            displayDimsParam,
+                            fixedIndicesParam,
+                            lineIndex
+                        )
+                        : [
+                            snapshot.selectedFile || "no-file",
+                            snapshot.selectedPath || "/",
+                            displayDimsParam || "none",
+                            fixedIndicesParam || "none",
+                            lineIndex ?? "auto",
+                        ].join("|");
+
+            return {
+                displayDims,
+                fixedIndices,
+                displayDimsParam,
+                fixedIndicesParam,
+                lineIndex,
+                lineDim,
+                totalPoints,
                 selectionKey,
             };
         }
@@ -1831,18 +1919,28 @@ function init_viewer_state_6() {
                 const sourceSize = Math.max(0, toSafeInteger(size, shape[dimIndex]));
                 const max = Math.max(0, sourceSize - 1);
                 const normalizedValue = Math.max(0, Math.min(max, toSafeInteger(value, 0)));
-                const canLiveUpdateHeatmap =
+                const liveUpdateMode =
                     snapshot.route === "viewer" &&
                     snapshot.viewMode === "display" &&
                     snapshot.selectedNodeType === "dataset" &&
-                    (snapshot.displayTab === "heatmap" || snapshot.displayTab === "image") &&
-                    snapshot.heatmapFullEnabled === true &&
                     Array.isArray(appliedDims) &&
                     appliedDims.length === 2 &&
-                    areDisplayDimsEqual(stagedDims, appliedDims);
+                    areDisplayDimsEqual(stagedDims, appliedDims)
+                        ? snapshot.displayTab === "line" && snapshot.lineFullEnabled === true
+                            ? "line"
+                            : (snapshot.displayTab === "heatmap" || snapshot.displayTab === "image") &&
+                              snapshot.heatmapFullEnabled === true
+                                ? "heatmap"
+                                : null
+                        : null;
 
-                const heatmapRuntimeApi = canLiveUpdateHeatmap ? resolveActiveHeatmapRuntimeApi(snapshot) : null;
-                if (heatmapRuntimeApi) {
+                const selectionRuntimeApi =
+                    liveUpdateMode === "line"
+                        ? resolveActiveLineRuntimeApi(snapshot)
+                        : liveUpdateMode === "heatmap"
+                            ? resolveActiveHeatmapRuntimeApi(snapshot)
+                            : null;
+                if (selectionRuntimeApi) {
                     const currentAppliedFixed = buildNextFixedIndices(
                         normalizeFixedIndicesForShape(config.fixedIndices, shape, appliedDims),
                         appliedDims,
@@ -1869,19 +1967,29 @@ function init_viewer_state_6() {
 
                     let updatePromise = Promise.resolve(true);
                     if (!areFixedIndicesEqual(nextFixedIndices, currentAppliedFixed)) {
-                        const nextSelection = buildHeatmapLiveSelection(snapshot, appliedDims, nextFixedIndices);
+                        const nextSelection =
+                            liveUpdateMode === "line"
+                                ? buildLineLiveSelection(snapshot, appliedDims, nextFixedIndices)
+                                : buildHeatmapLiveSelection(snapshot, appliedDims, nextFixedIndices);
                         updatePromise = Promise.resolve(
-                            heatmapRuntimeApi.updateSelection(
-                            {
-                                displayDims: nextSelection.displayDimsParam,
-                                fixedIndices: nextSelection.fixedIndicesParam,
-                                selectionKey: nextSelection.selectionKey,
-                            },
-                            {
-                                immediate: interaction === "change",
-                                preserveViewState: true,
-                                forceFullLoad,
-                            }
+                            selectionRuntimeApi.updateSelection(
+                                {
+                                    displayDims: nextSelection.displayDimsParam,
+                                    fixedIndices: nextSelection.fixedIndicesParam,
+                                    selectionKey: nextSelection.selectionKey,
+                                    ...(liveUpdateMode === "line"
+                                        ? {
+                                            lineIndex: nextSelection.lineIndex,
+                                            lineDim: nextSelection.lineDim,
+                                            totalPoints: nextSelection.totalPoints,
+                                        }
+                                        : {}),
+                                },
+                                {
+                                    immediate: interaction === "change",
+                                    preserveViewState: true,
+                                    forceFullLoad,
+                                }
                             )
                         ).then((result) => result !== false);
                     }

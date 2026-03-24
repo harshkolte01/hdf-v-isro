@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
   <head>
     <!--
@@ -8,18 +8,22 @@
       The host application is expected to navigate here with a backend object path in the URL.
 
       Supported query parameters:
-      - `?file=<backend-object-key>`  -> primary contract used by the modular viewer runtime
+      - `?file=<backend-object-key>`  -> primary contract used by the shared viewer runtime
+      - `?path=<backend-object-key>`  -> normalized to `file` below for host integrations
+      - `?key=<backend-object-key>`   -> normalized to `file` below for host integrations
+      - `?filePath=<backend-object-key>` -> normalized to `file` below for host integrations
+      - A host page may also expose the selected backend object path in a global `file` variable
 
       Important:
       - Pass the backend object key/path, not a full browser URL.
-      - Modular viewer assets are loaded from `style.css` and `js/*.js`.
-      - The runtime reads `?file=` inside `js/app-viewer.js`.
+      - Shared viewer assets are loaded from `spa/css`, `spa/js`, and `spa/config`
+      - The shared runtime reads `?file=` inside `spa/js/app-viewer.js`
     -->
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HDF Viewer</title>
 
-    <!-- Modular viewer styles. -->
+    <!-- Shared viewer styles from the local SPA asset folder. -->
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
@@ -40,7 +44,7 @@
             <ul id="tree-list" class="tree-root"></ul>
           </div>
           <div id="tree-status" class="tree-status" aria-live="polite">
-            Select the h5 file to open viewer.
+            Waiting for file query parameter.
           </div>
         </div>
 
@@ -58,6 +62,22 @@
           </div>
         </div>
       </aside>
+
+      <div
+        id="viewer-sidebar-resizer"
+        class="viewer-sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-controls="viewer-sidebar"
+        aria-label="Resize sidebar"
+        tabindex="0"
+      >
+        <span class="viewer-sidebar-resizer-grip" aria-hidden="true">
+          <span class="viewer-sidebar-resizer-dot"></span>
+          <span class="viewer-sidebar-resizer-dot"></span>
+          <span class="viewer-sidebar-resizer-dot"></span>
+        </span>
+      </div>
 
       <!-- Right side: top bar, tabs, charts, table preview, and dataset view. -->
       <section id="viewer-main" class="viewer-main">
@@ -99,15 +119,9 @@
     <div id="sidebar-backdrop" class="sidebar-backdrop" style="display: none"></div>
     <!-- Small bottom status area. Boot errors and loading messages show here. -->
     <div id="global-status" class="panel-status info" role="status" aria-live="polite">
-      Select the h5 file to open viewer.
+      Viewer shell loaded. Waiting for file query parameter from host UI.
     </div>
 
-    <script src="js/viewer-core.js"></script>
-    <script src="js/viewer-api.js"></script>
-    <script src="js/viewer-state.js"></script>
-    <script src="js/viewer-render.js"></script>
-    <script src="js/viewer-runtimes.js"></script>
-    <script src="js/viewer-shell.js"></script>
-    <script src="js/app-viewer.js"></script>
+    <script src="script.js"></script>
   </body>
 </html>

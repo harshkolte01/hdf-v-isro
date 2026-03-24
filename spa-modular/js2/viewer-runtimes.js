@@ -148,6 +148,14 @@ function init_viewer_runtimes_2() {
     // Max concurrent block fetch requests to avoid flooding the backend on large table scrolls
     const MATRIX_MAX_PARALLEL_REQUESTS = 4;
 
+    const MATRIX_LINKED_PLOT_CACHE =
+        global.__matrixLinkedPlotCache instanceof Map
+            ? global.__matrixLinkedPlotCache
+            : new Map();
+    global.__matrixLinkedPlotCache = MATRIX_LINKED_PLOT_CACHE;
+
+    // Returns a cached block or null; block key encodes all offset/limit parameters
+
     // Returns a cached block or null; block key encodes all offset/limit parameters
     function getCachedMatrixBlock(runtime, rowOffset, colOffset, rowLimit, colLimit) {
         const blockKey = buildMatrixBlockKey(
@@ -191,6 +199,11 @@ function init_viewer_runtimes_2() {
         const headerCellsLayer = shell.querySelector("[data-matrix-header-cells]");
         const indexLayer = shell.querySelector("[data-matrix-index]");
         const cellsLayer = shell.querySelector("[data-matrix-cells]");
+        const linkedPlotPanel = shell.querySelector("[data-matrix-linked-plot]");
+        const linkedPlotTitle = shell.querySelector("[data-matrix-linked-title]");
+        const linkedPlotStatusElement = shell.querySelector("[data-line-status]");
+        const linkedPlotShellHost = shell.querySelector("[data-matrix-linked-shell-host]");
+        const linkedPlotCloseButton = shell.querySelector("[data-matrix-plot-close]");
         const statusElement =
             shell.closest(".data-section")?.querySelector("[data-matrix-status]") || null;
 
@@ -242,6 +255,8 @@ function init_viewer_runtimes_2() {
             headerPool: [],
             rowIndexPool: [],
             cellPool: [],
+            selectedPlot: null,
+            linkedLineCleanup: null,
         };
 
         const visible = {
@@ -252,6 +267,197 @@ function init_viewer_runtimes_2() {
         };
 
         const clampIndex = (value, min, max) => Math.max(min, Math.min(max, value));
+
+        function setLinkedPlotTitle(plot = runtime.selectedPlot) {
+            if (!linkedPlotTitle) {
+                return;
+            }
+
+            if (!plot) {
+                linkedPlotTitle.textContent =
+                    "Plot mode: click a row or column header to inspect its profile.";
+                return;
+            }
+
+            linkedPlotTitle.textContent =
+                plot.kind === "row"
+                    ? `Selected row ${plot.index} | Plotting values across columns`
+                    : `Selected column ${plot.index} | Plotting values across rows`;
+        }
+
+        function clearLinkedLineRuntime() {
+            if (typeof runtime.linkedLineCleanup === "function") {
+                try {
+                    runtime.linkedLineCleanup();
+                } catch (_error) {
+                    // ignore cleanup errors for detached inline plots
+                }
+            }
+            runtime.linkedLineCleanup = null;
+            if (linkedPlotShellHost) {
+                linkedPlotShellHost.innerHTML = "";
+            }
+        }
+
+        function closeLinkedPlot() {
+            runtime.selectedPlot = null;
+            MATRIX_LINKED_PLOT_CACHE.delete(runtime.selectionKey);
+            clearLinkedLineRuntime();
+            if (linkedPlotPanel) {
+                linkedPlotPanel.hidden = true;
+            }
+            setLinkedPlotTitle(null);
+            setMatrixStatus(linkedPlotStatusElement, "Click a row or column header to plot.", "info");
+            queueRender();
+        }
+
+        function revealLinkedPlot() {
+            if (!linkedPlotPanel || linkedPlotPanel.hidden) {
+                return;
+            }
+
+            try {
+                linkedPlotPanel.scrollIntoView({
+                    block: "nearest",
+                    inline: "nearest",
+                    behavior: "smooth",
+                });
+            } catch (_error) {
+                linkedPlotPanel.scrollIntoView(false);
+            }
+        }
+
+        function normalizePlotSelection(kind, index) {
+            const normalizedKind =
+                kind === "row"
+                    ? "row"
+                    : kind === "col"
+                        ? "col"
+                        : null;
+            const normalizedIndex = toSafeInteger(index, null);
+            if (!normalizedKind || normalizedIndex === null) {
+                return null;
+            }
+
+            const maxIndex = normalizedKind === "row" ? runtime.rows - 1 : runtime.cols - 1;
+            if (maxIndex < 0 || normalizedIndex < 0 || normalizedIndex > maxIndex) {
+                return null;
+            }
+
+            const totalPoints = normalizedKind === "row" ? runtime.cols : runtime.rows;
+            if (totalPoints <= 0) {
+                return null;
+            }
+
+            const baseSelectionKey =
+                typeof buildLineSelectionKey === "function"
+                    ? buildLineSelectionKey(
+                        runtime.fileKey,
+                        runtime.path,
+                        runtime.displayDims,
+                        runtime.fixedIndices,
+                        normalizedIndex
+                    )
+                    : [
+                        runtime.fileKey || "no-file",
+                        runtime.path || "/",
+                        runtime.displayDims || "none",
+                        runtime.fixedIndices || "none",
+                        normalizedIndex,
+                    ].join("|");
+
+            return {
+                kind: normalizedKind,
+                index: normalizedIndex,
+                totalPoints,
+                lineDim: normalizedKind,
+                lineIndex: normalizedIndex,
+                selectionKey: `${baseSelectionKey}|${normalizedKind}`,
+                title:
+                    normalizedKind === "row"
+                        ? `Row profile: Row ${normalizedIndex} across columns`
+                        : `Column profile: Column ${normalizedIndex} across rows`,
+            };
+        }
+
+        function renderLinkedPlot(plot, options = {}) {
+            const normalizedPlot = normalizePlotSelection(plot?.kind, plot?.index);
+            if (!normalizedPlot) {
+                return false;
+            }
+
+            if (
+                typeof global.renderLinkedLineShellMarkup !== "function" ||
+                typeof initializeLineRuntime !== "function" ||
+                !linkedPlotPanel ||
+                !linkedPlotShellHost
+            ) {
+                setMatrixStatus(statusElement, "Inline line plot is unavailable.", "error");
+                return false;
+            }
+
+            runtime.selectedPlot = normalizedPlot;
+            MATRIX_LINKED_PLOT_CACHE.set(runtime.selectionKey, {
+                kind: normalizedPlot.kind,
+                index: normalizedPlot.index,
+            });
+            linkedPlotPanel.hidden = false;
+            setLinkedPlotTitle(normalizedPlot);
+            setMatrixStatus(linkedPlotStatusElement, `Loading ${normalizedPlot.title}...`, "info");
+            clearLinkedLineRuntime();
+
+            linkedPlotShellHost.innerHTML = global.renderLinkedLineShellMarkup({
+                fileKey: runtime.fileKey,
+                fileEtag: runtime.fileEtag,
+                path: runtime.path,
+                displayDims: runtime.displayDims,
+                fixedIndices: runtime.fixedIndices,
+                selectionKey: normalizedPlot.selectionKey,
+                totalPoints: normalizedPlot.totalPoints,
+                lineIndex: normalizedPlot.lineIndex,
+                lineDim: normalizedPlot.lineDim,
+                notation: runtime.notation,
+                lineGrid: true,
+                lineAspect: "line",
+                inlineShellClass: "matrix-inline-line-shell",
+            });
+
+            const lineShell = linkedPlotShellHost.querySelector("[data-line-shell]");
+            if (!lineShell) {
+                setMatrixStatus(statusElement, "Failed to create inline line plot.", "error");
+                return false;
+            }
+
+            const cleanup = initializeLineRuntime(lineShell);
+            runtime.linkedLineCleanup =
+                typeof cleanup === "function"
+                    ? cleanup
+                    : typeof lineShell.__lineRuntimeCleanup === "function"
+                        ? lineShell.__lineRuntimeCleanup
+                        : null;
+
+            if (options.reveal !== false) {
+                revealLinkedPlot();
+            }
+            queueRender();
+            return true;
+        }
+
+        function activatePlotFromTrigger(trigger, options = {}) {
+            if (!(trigger instanceof Element)) {
+                return false;
+            }
+
+            const plot = normalizePlotSelection(
+                String(trigger.dataset.matrixPlotKind || "").trim().toLowerCase(),
+                trigger.dataset.matrixPlotIndex
+            );
+            if (!plot) {
+                return false;
+            }
+
+            return renderLinkedPlot(plot, options);
+        }
 
         function queueRender() {
             if (runtime.destroyed || runtime.rafToken !== null) {
@@ -274,8 +480,8 @@ function init_viewer_runtimes_2() {
             setMatrixStatus(
                 statusElement,
                 runtime.loadedBlocks > 0
-                    ? `Loaded ${runtime.loadedBlocks} block${runtime.loadedBlocks > 1 ? "s" : ""}.`
-                    : "Scroll to stream blocks.",
+                    ? `Loaded ${runtime.loadedBlocks} block${runtime.loadedBlocks > 1 ? "s" : ""}. Click a row or column header to plot.`
+                    : "Scroll to stream blocks. Click a row or column header to plot.",
                 "info"
             );
         }
@@ -470,10 +676,22 @@ function init_viewer_runtimes_2() {
             );
             visibleCols.forEach((col, index) => {
                 const node = runtime.headerPool[index];
+                const isSelected =
+                    runtime.selectedPlot?.kind === "col" && runtime.selectedPlot?.index === col;
                 node.style.left = `${col * MATRIX_COL_WIDTH}px`;
                 node.style.width = `${MATRIX_COL_WIDTH}px`;
                 node.style.height = `${MATRIX_HEADER_HEIGHT}px`;
                 node.textContent = String(col);
+                node.dataset.matrixPlotTrigger = "true";
+                node.dataset.matrixPlotKind = "col";
+                node.dataset.matrixPlotIndex = String(col);
+                node.setAttribute("role", "button");
+                node.setAttribute("tabindex", "0");
+                node.setAttribute("aria-label", `Plot column ${col} as a line graph`);
+                node.setAttribute("aria-pressed", isSelected ? "true" : "false");
+                node.setAttribute("title", `Plot column ${col}`);
+                node.classList.add("matrix-cell-trigger");
+                node.classList.toggle("is-selected", isSelected);
             });
 
             indexLayer.style.transform = "";
@@ -485,11 +703,23 @@ function init_viewer_runtimes_2() {
             );
             visibleRows.forEach((row, index) => {
                 const node = runtime.rowIndexPool[index];
+                const isSelected =
+                    runtime.selectedPlot?.kind === "row" && runtime.selectedPlot?.index === row;
                 node.style.left = "0px";
                 node.style.top = `${row * MATRIX_ROW_HEIGHT}px`;
                 node.style.width = `${MATRIX_INDEX_WIDTH}px`;
                 node.style.height = `${MATRIX_ROW_HEIGHT}px`;
                 node.textContent = String(row);
+                node.dataset.matrixPlotTrigger = "true";
+                node.dataset.matrixPlotKind = "row";
+                node.dataset.matrixPlotIndex = String(row);
+                node.setAttribute("role", "button");
+                node.setAttribute("tabindex", "0");
+                node.setAttribute("aria-label", `Plot row ${row} as a line graph`);
+                node.setAttribute("aria-pressed", isSelected ? "true" : "false");
+                node.setAttribute("title", `Plot row ${row}`);
+                node.classList.add("matrix-cell-trigger");
+                node.classList.toggle("is-selected", isSelected);
             });
 
             const totalCellCount = visibleRows.length * visibleCols.length;
@@ -617,6 +847,42 @@ function init_viewer_runtimes_2() {
             }
         }
 
+        function resolvePlotTriggerTarget(target) {
+            if (!(target instanceof Element)) {
+                return null;
+            }
+            const trigger = target.closest("[data-matrix-plot-trigger='true']");
+            return trigger && shell.contains(trigger) ? trigger : null;
+        }
+
+        function onPlotTriggerClick(event) {
+            const trigger = resolvePlotTriggerTarget(event.target);
+            if (!trigger) {
+                return;
+            }
+            event.preventDefault();
+            activatePlotFromTrigger(trigger, { reveal: true });
+        }
+
+        function onPlotTriggerKeyDown(event) {
+            if (event.key !== "Enter" && event.key !== " ") {
+                return;
+            }
+
+            const trigger = resolvePlotTriggerTarget(event.target);
+            if (!trigger) {
+                return;
+            }
+
+            event.preventDefault();
+            activatePlotFromTrigger(trigger, { reveal: true });
+        }
+
+        function onCloseLinkedPlot(event) {
+            event?.preventDefault?.();
+            closeLinkedPlot();
+        }
+
         async function exportCsvDisplayed() {
             if (runtime.destroyed) {
                 throw new Error("Matrix runtime is no longer active.");
@@ -696,6 +962,13 @@ function init_viewer_runtimes_2() {
             queueRender();
         };
         table.addEventListener("scroll", onScroll, { passive: true });
+        headerCellsLayer.addEventListener("click", onPlotTriggerClick);
+        headerCellsLayer.addEventListener("keydown", onPlotTriggerKeyDown);
+        indexLayer.addEventListener("click", onPlotTriggerClick);
+        indexLayer.addEventListener("keydown", onPlotTriggerKeyDown);
+        if (linkedPlotCloseButton) {
+            linkedPlotCloseButton.addEventListener("click", onCloseLinkedPlot);
+        }
 
         let resizeObserver = null;
         const onWindowResize = () => {
@@ -710,17 +983,31 @@ function init_viewer_runtimes_2() {
         }
 
         updateStatusFromRuntime();
+        setLinkedPlotTitle(null);
+        setMatrixStatus(linkedPlotStatusElement, "Click a row or column header to plot.", "info");
+        const persistedPlot = MATRIX_LINKED_PLOT_CACHE.get(runtime.selectionKey);
+        if (persistedPlot && typeof persistedPlot === "object") {
+            renderLinkedPlot(persistedPlot, { reveal: false });
+        }
         queueRender();
 
         const cleanup = () => {
             runtime.destroyed = true;
             runtime.blockQueue = [];
             runtime.queuedBlockKeys.clear();
+            clearLinkedLineRuntime();
             runtime.activeCancelKeys.forEach((cancelKey) => {
                 cancelPendingRequest(cancelKey, "matrix-runtime-disposed");
             });
             runtime.activeCancelKeys.clear();
             table.removeEventListener("scroll", onScroll);
+            headerCellsLayer.removeEventListener("click", onPlotTriggerClick);
+            headerCellsLayer.removeEventListener("keydown", onPlotTriggerKeyDown);
+            indexLayer.removeEventListener("click", onPlotTriggerClick);
+            indexLayer.removeEventListener("keydown", onPlotTriggerKeyDown);
+            if (linkedPlotCloseButton) {
+                linkedPlotCloseButton.removeEventListener("click", onCloseLinkedPlot);
+            }
             if (resizeObserver) {
                 resizeObserver.disconnect();
             } else {
@@ -737,6 +1024,7 @@ function init_viewer_runtimes_2() {
 
         MATRIX_RUNTIME_CLEANUPS.add(cleanup);
     }
+
     if (typeof initializeMatrixRuntime !== "undefined") {
         moduleState.initializeMatrixRuntime = initializeMatrixRuntime;
         global.initializeMatrixRuntime = initializeMatrixRuntime;
@@ -769,7 +1057,80 @@ function init_viewer_runtimes_3() {
     const LINE_FULLSCREEN_RESTORE_TTL_MS = 1200;
     // Fixed stroke colors for compare overlay series (index 0 = primary, 1-4 = additional series)
     const LINE_COMPARE_COLORS = ["#DC2626", "#16A34A", "#D97706", "#0EA5E9", "#334155"];
+    const LINE_WINDOW_RENDER_CACHE =
+        global.__lineWindowRenderCache instanceof Map
+            ? global.__lineWindowRenderCache
+            : new Map();
+    const MAX_LINE_WINDOW_RENDER_CACHE_ENTRIES = 320;
+    global.__lineWindowRenderCache = LINE_WINDOW_RENDER_CACHE;
     let lineFullscreenRestore = null;
+
+    function getLineWindowRenderCacheKey(runtime, start = runtime?.viewStart, span = runtime?.viewSpan) {
+        return [
+            runtime?.selectionKey || "no-selection",
+            runtime?.fileEtag || "no-etag",
+            runtime?.qualityRequested || "auto",
+            toSafeInteger(start, 0),
+            toSafeInteger(span, 0),
+        ].join("|");
+    }
+
+    function cloneLinePoints(points) {
+        return Array.isArray(points)
+            ? points
+                .map((point) => ({
+                    x: Number(point?.x),
+                    y: Number(point?.y),
+                }))
+                .filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
+            : [];
+    }
+
+    function cloneCompareSeries(seriesList) {
+        return Array.isArray(seriesList)
+            ? seriesList
+                .map((entry) => ({
+                    isBase: entry?.isBase === true,
+                    path: String(entry?.path || ""),
+                    label: String(entry?.label || ""),
+                    color: String(entry?.color || "#2563EB"),
+                    points: cloneLinePoints(entry?.points),
+                }))
+                .filter((entry) => entry.points.length > 0)
+            : [];
+    }
+
+    function rememberLineWindowRender(runtime, snapshot) {
+        if (!runtime || !snapshot || typeof snapshot !== "object") {
+            return;
+        }
+        const cacheKey = getLineWindowRenderCacheKey(runtime, snapshot.viewStart, snapshot.viewSpan);
+        LINE_WINDOW_RENDER_CACHE.delete(cacheKey);
+        LINE_WINDOW_RENDER_CACHE.set(cacheKey, {
+            ...snapshot,
+            basePoints: cloneLinePoints(snapshot.basePoints),
+            compareSeries: cloneCompareSeries(snapshot.compareSeries),
+            failedCompareTargets: Array.isArray(snapshot.failedCompareTargets)
+                ? snapshot.failedCompareTargets.map((entry) => ({
+                    path: String(entry?.path || ""),
+                    label: String(entry?.label || ""),
+                    reason: String(entry?.reason || ""),
+                }))
+                : [],
+        });
+        while (LINE_WINDOW_RENDER_CACHE.size > MAX_LINE_WINDOW_RENDER_CACHE_ENTRIES) {
+            const oldestKey = LINE_WINDOW_RENDER_CACHE.keys().next().value;
+            if (!oldestKey) {
+                break;
+            }
+            LINE_WINDOW_RENDER_CACHE.delete(oldestKey);
+        }
+    }
+
+    function getLineWindowRender(runtime, start = runtime?.viewStart, span = runtime?.viewSpan) {
+        const cacheKey = getLineWindowRenderCacheKey(runtime, start, span);
+        return LINE_WINDOW_RENDER_CACHE.get(cacheKey) || null;
+    }
 
     function isNumericDtype(dtype) {
         const normalized = String(dtype || "").trim().toLowerCase();
@@ -856,6 +1217,10 @@ function init_viewer_runtimes_3() {
         lineFullscreenRestore = null;
         return key === selectionKey && Date.now() <= expiresAt;
     }
+
+    const LINE_SELECTION_UPDATE_DEBOUNCE_MS = 140;
+
+
     function initializeLineRuntime(shell) {
         if (!shell) {
             return null;
@@ -967,6 +1332,7 @@ function init_viewer_runtimes_3() {
             fetchTimer: null,
             requestSeq: 0,
             destroyed: false,
+            activeCancelKeys: new Set(),
             panEnabled: false,
             zoomClickEnabled: false,
             isPanning: false,
@@ -990,7 +1356,12 @@ function init_viewer_runtimes_3() {
             hoverDot: null,
             zoomFocusX: null,
             fullscreenActive: false,
+            recoveryRetryCount: 0,
+            recoveryRetryTimer: null,
         };
+
+        let selectionUpdateTimer = null;
+        let pendingSelectionUpdate = null;
 
         if (consumeLineFullscreenRestore(selectionKey)) {
             runtime.fullscreenActive = true;
@@ -1066,10 +1437,7 @@ function init_viewer_runtimes_3() {
                 0,
                 runtime.totalPoints - 1
             ).toLocaleString()}`;
-            rangeLabel.textContent =
-                typeof pointCount === "number" && pointCount >= 0
-                    ? `${baseText} | ${pointCount.toLocaleString()} points`
-                    : baseText;
+            rangeLabel.textContent = baseText;
         }
 
         function syncQualityControl() {
@@ -1403,6 +1771,76 @@ function init_viewer_runtimes_3() {
             legendElement.innerHTML = `${seriesMarkup}${failedMarkup}`;
         }
 
+        function clearRecoveryRetry() {
+            if (runtime.recoveryRetryTimer !== null) {
+                clearTimeout(runtime.recoveryRetryTimer);
+                runtime.recoveryRetryTimer = null;
+            }
+        }
+
+        function scheduleRecoveryFetch(reason = "retry") {
+            if (
+                runtime.destroyed ||
+                (Array.isArray(runtime.points) && runtime.points.length >= 2) ||
+                runtime.recoveryRetryCount >= 2
+            ) {
+                return;
+            }
+            clearRecoveryRetry();
+            const retrySelectionKey = runtime.selectionKey;
+            const retryStart = runtime.viewStart;
+            const retrySpan = runtime.viewSpan;
+            runtime.recoveryRetryCount += 1;
+            runtime.recoveryRetryTimer = setTimeout(() => {
+                runtime.recoveryRetryTimer = null;
+                if (
+                    runtime.destroyed ||
+                    retrySelectionKey !== runtime.selectionKey ||
+                    retryStart !== runtime.viewStart ||
+                    retrySpan !== runtime.viewSpan
+                ) {
+                    return;
+                }
+                setMatrixStatus(statusElement, `Retrying line range (${reason})...`, "info");
+                void fetchLineRange({ force: true, recovery: true });
+            }, 120 * runtime.recoveryRetryCount);
+        }
+
+        function applyCachedWindowSnapshot(snapshot, options = {}) {
+            if (!snapshot || typeof snapshot !== "object") {
+                return false;
+            }
+            const basePoints = cloneLinePoints(snapshot.basePoints);
+            const compareSeries = cloneCompareSeries(snapshot.compareSeries);
+            if (basePoints.length < 2) {
+                return false;
+            }
+            runtime.lineStep = Math.max(1, toSafeInteger(snapshot.lineStep, runtime.lineStep));
+            runtime.qualityApplied = normalizeLineQuality(snapshot.qualityApplied || runtime.qualityRequested);
+            runtime.requestedPoints = Math.max(
+                0,
+                toSafeInteger(snapshot.requestedPoints, basePoints.length)
+            );
+            runtime.returnedPoints = Math.max(
+                0,
+                toSafeInteger(snapshot.returnedPoints, basePoints.length)
+            );
+            runtime.failedCompareTargets = Array.isArray(snapshot.failedCompareTargets)
+                ? snapshot.failedCompareTargets.map((entry) => ({
+                    path: String(entry?.path || ""),
+                    label: String(entry?.label || ""),
+                    reason: String(entry?.reason || ""),
+                }))
+                : [];
+            updateRangeLabel(basePoints.length);
+            updateZoomLabel();
+            renderSeries(basePoints, compareSeries);
+            if (options.statusMessage) {
+                setMatrixStatus(statusElement, options.statusMessage, "info");
+            }
+            return true;
+        }
+
         function getSvgDimensions() {
             const rect = canvas.getBoundingClientRect();
             const w = Math.max(300, Math.round(rect.width) || LINE_SVG_WIDTH);
@@ -1722,14 +2160,15 @@ function init_viewer_runtimes_3() {
             }, LINE_FETCH_DEBOUNCE_MS);
         }
 
-        async function fetchLineRange() {
+        async function fetchLineRange(options = {}) {
             if (runtime.destroyed) {
-                return;
+                return false;
             }
 
             const requestId = ++runtime.requestSeq;
             const offset = runtime.viewStart;
             const limit = runtime.viewSpan;
+            const forceRequest = options?.force === true;
 
             setMatrixStatus(statusElement, "Loading line range...", "info");
 
@@ -1760,6 +2199,7 @@ function init_viewer_runtimes_3() {
                 params.etag = runtime.fileEtag;
             }
 
+            const requestCancelKeys = [];
             try {
                 const comparePrecheckFailures = [];
                 const compareTargets = [];
@@ -1844,23 +2284,28 @@ function init_viewer_runtimes_3() {
 
                 // Base and compare ranges are fetched together; compare failures do not block base rendering.
                 const settledResponses = await Promise.allSettled(
-                    requestTargets.map((target) =>
-                        getFileData(runtime.fileKey, target.path, params, {
+                    requestTargets.map((target) => {
+                        const cancelKey = `${runtime.selectionKey}|${target.path}`;
+                        requestCancelKeys.push(cancelKey);
+                        runtime.activeCancelKeys.add(cancelKey);
+                        return getFileData(runtime.fileKey, target.path, params, {
+                            force: forceRequest,
                             cancelPrevious: true,
-                            cancelKey: `${runtime.selectionKey}|${target.path}`,
-                        })
-                    )
+                            cancelKey,
+                        });
+                    })
                 );
 
                 if (runtime.destroyed || requestId !== runtime.requestSeq) {
-                    return;
+                    return false;
                 }
 
                 const baseOutcome = settledResponses[0];
                 if (!baseOutcome || baseOutcome.status !== "fulfilled") {
                     const baseError = baseOutcome?.reason;
                     if (baseError?.isAbort || baseError?.code === "ABORTED") {
-                        return;
+                        scheduleRecoveryFetch("request interrupted");
+                        return false;
                     }
                     throw baseError || new Error("Failed to load base line dataset.");
                 }
@@ -1937,6 +2382,26 @@ function init_viewer_runtimes_3() {
                 runtime.failedCompareTargets = failedTargets;
                 runtime.compareSeries = compareSeries;
 
+                if (baseSeries.points.length < 2 && limit >= 2) {
+                    scheduleRecoveryFetch("empty response");
+                } else {
+                    clearRecoveryRetry();
+                    runtime.recoveryRetryCount = 0;
+                }
+                if (baseSeries.points.length >= 2) {
+                    rememberLineWindowRender(runtime, {
+                        viewStart: offset,
+                        viewSpan: limit,
+                        basePoints: baseSeries.points,
+                        compareSeries,
+                        failedCompareTargets: failedTargets,
+                        lineStep: runtime.lineStep,
+                        qualityApplied: runtime.qualityApplied,
+                        requestedPoints: runtime.requestedPoints,
+                        returnedPoints: runtime.returnedPoints,
+                    });
+                }
+
                 if (Number.isFinite(runtime.pendingZoomFocusX)) {
                     runtime.zoomFocusX = runtime.pendingZoomFocusX;
                 }
@@ -1962,19 +2427,27 @@ function init_viewer_runtimes_3() {
                     `${runtime.qualityApplied === "exact" ? "Exact" : "Overview"} loaded ${baseSeries.points.length.toLocaleString()} points (step ${runtime.lineStep}).${compareLoadedText}`,
                     "info"
                 );
+                return true;
             } catch (error) {
                 if (runtime.destroyed) {
-                    return;
+                    return false;
                 }
 
                 if (error?.isAbort || error?.code === "ABORTED") {
-                    return;
+                    scheduleRecoveryFetch("request interrupted");
+                    return false;
                 }
 
                 runtime.failedCompareTargets = [];
                 runtime.compareSeries = [];
                 updateLegend([], []);
                 setMatrixStatus(statusElement, error?.message || "Failed to load line range.", "error");
+                scheduleRecoveryFetch("load failed");
+                return false;
+            } finally {
+                requestCancelKeys.forEach((cancelKey) => {
+                    runtime.activeCancelKeys.delete(cancelKey);
+                });
             }
         }
 
@@ -2107,6 +2580,180 @@ function init_viewer_runtimes_3() {
             exportPng,
         };
 
+        function cancelInFlightRequests() {
+            runtime.activeCancelKeys.forEach((cancelKey) => {
+                cancelPendingRequest(cancelKey, "line-runtime-selection-update");
+            });
+            runtime.activeCancelKeys.clear();
+        }
+
+        function clearPendingSelectionUpdate() {
+            if (selectionUpdateTimer !== null) {
+                clearTimeout(selectionUpdateTimer);
+                selectionUpdateTimer = null;
+            }
+            pendingSelectionUpdate = null;
+        }
+
+        function restoreSelectionViewState(selectionKey) {
+            const cachedView = LINE_VIEW_CACHE.get(selectionKey);
+            if (!cachedView || typeof cachedView !== "object") {
+                return false;
+            }
+
+            runtime.qualityRequested = normalizeLineQuality(
+                cachedView.qualityRequested || runtime.qualityRequested
+            );
+            const restored = clampViewport(cachedView.start, cachedView.span);
+            runtime.viewStart = restored.start;
+            runtime.viewSpan = restored.span;
+            runtime.panEnabled = cachedView.panEnabled === true;
+            runtime.zoomClickEnabled = cachedView.zoomClickEnabled === true;
+            runtime.zoomFocusX = Number.isFinite(cachedView.zoomFocusX) ? cachedView.zoomFocusX : null;
+            if (runtime.panEnabled && runtime.zoomClickEnabled) {
+                runtime.zoomClickEnabled = false;
+            }
+            return true;
+        }
+
+        async function applySelectionUpdate(nextSelection, options = {}) {
+            if (runtime.destroyed || !nextSelection || typeof nextSelection !== "object") {
+                return false;
+            }
+
+            const nextDisplayDims =
+                typeof nextSelection.displayDims === "string" ? nextSelection.displayDims : runtime.displayDims;
+            const nextFixedIndices =
+                typeof nextSelection.fixedIndices === "string" ? nextSelection.fixedIndices : runtime.fixedIndices;
+            const hasLineIndex = Object.prototype.hasOwnProperty.call(nextSelection, "lineIndex");
+            const nextLineIndex = hasLineIndex
+                ? nextSelection.lineIndex === null
+                    ? null
+                    : toSafeInteger(nextSelection.lineIndex, runtime.lineIndex)
+                : runtime.lineIndex;
+            const hasTotalPoints = Object.prototype.hasOwnProperty.call(nextSelection, "totalPoints");
+            const nextTotalPoints = hasTotalPoints
+                ? Math.max(0, toSafeInteger(nextSelection.totalPoints, runtime.totalPoints))
+                : runtime.totalPoints;
+            const nextLineDimValue =
+                typeof nextSelection.lineDim === "string" ? nextSelection.lineDim : runtime.lineDim;
+            const nextLineDim =
+                nextLineIndex === null
+                    ? null
+                    : String(nextLineDimValue || "").trim().toLowerCase() === "col"
+                        ? "col"
+                        : "row";
+            const nextSelectionKey = String(
+                nextSelection.selectionKey ||
+                buildLineSelectionKey(runtime.fileKey, runtime.path, nextDisplayDims, nextFixedIndices, nextLineIndex)
+            );
+
+            const dimsChanged = nextDisplayDims !== runtime.displayDims;
+            const fixedChanged = nextFixedIndices !== runtime.fixedIndices;
+            const totalPointsChanged = nextTotalPoints !== runtime.totalPoints;
+            const lineIndexChanged = nextLineIndex !== runtime.lineIndex;
+            const lineDimChanged = nextLineDim !== runtime.lineDim;
+            const selectionChanged = nextSelectionKey !== runtime.selectionKey;
+            if (
+                !dimsChanged &&
+                !fixedChanged &&
+                !totalPointsChanged &&
+                !lineIndexChanged &&
+                !lineDimChanged &&
+                !selectionChanged
+            ) {
+                return true;
+            }
+
+            const preserveViewState = options.preserveViewState === true && !totalPointsChanged;
+            persistViewState();
+            if (runtime.fetchTimer !== null) {
+                clearTimeout(runtime.fetchTimer);
+                runtime.fetchTimer = null;
+            }
+            runtime.requestSeq += 1;
+            cancelInFlightRequests();
+
+            runtime.displayDims = nextDisplayDims || "";
+            runtime.fixedIndices = nextFixedIndices || "";
+            runtime.totalPoints = Math.max(0, nextTotalPoints);
+            runtime.lineIndex = nextLineIndex;
+            runtime.lineDim = nextLineDim;
+            runtime.selectionKey = nextSelectionKey;
+            runtime.minSpan = Math.max(1, Math.min(LINE_MIN_VIEW_SPAN, Math.max(1, runtime.totalPoints)));
+            shell.dataset.lineDisplayDims = runtime.displayDims;
+            shell.dataset.lineFixedIndices = runtime.fixedIndices;
+            shell.dataset.lineTotalPoints = String(runtime.totalPoints);
+            shell.dataset.lineIndex =
+                runtime.lineIndex === null || runtime.lineIndex === undefined ? "" : String(runtime.lineIndex);
+            shell.dataset.lineDim = runtime.lineDim || "";
+            shell.dataset.lineSelectionKey = runtime.selectionKey;
+            runtime.pendingZoomFocusX = null;
+
+            if (preserveViewState) {
+                const preserved = clampViewport(runtime.viewStart, runtime.viewSpan);
+                runtime.viewStart = preserved.start;
+                runtime.viewSpan = preserved.span;
+            } else if (!restoreSelectionViewState(runtime.selectionKey)) {
+                runtime.viewStart = 0;
+                const reset = clampViewport(0, runtime.totalPoints);
+                runtime.viewStart = reset.start;
+                runtime.viewSpan = reset.span;
+                runtime.zoomFocusX = null;
+                runtime.panEnabled = false;
+                runtime.zoomClickEnabled = false;
+            }
+
+            syncPanState();
+            syncZoomClickState();
+            updateRangeLabel();
+            updateZoomLabel();
+            syncWindowControl();
+            syncJumpInput();
+            hideHover();
+            persistViewState();
+            setMatrixStatus(statusElement, "Updating line slice...", "info");
+            return await fetchLineRange();
+        }
+
+        function queueSelectionUpdate(nextSelection, options = {}) {
+            pendingSelectionUpdate = {
+                nextSelection: nextSelection && typeof nextSelection === "object" ? { ...nextSelection } : {},
+                options: { ...options },
+            };
+
+            if (options && options.immediate === true) {
+                const immediateUpdate = pendingSelectionUpdate;
+                clearPendingSelectionUpdate();
+                return applySelectionUpdate(immediateUpdate.nextSelection, immediateUpdate.options);
+            }
+
+            if (selectionUpdateTimer !== null) {
+                clearTimeout(selectionUpdateTimer);
+            }
+
+            return new Promise((resolve, reject) => {
+                selectionUpdateTimer = setTimeout(() => {
+                    selectionUpdateTimer = null;
+                    const queuedUpdate = pendingSelectionUpdate;
+                    pendingSelectionUpdate = null;
+                    if (!queuedUpdate) {
+                        resolve(false);
+                        return;
+                    }
+                    Promise.resolve(applySelectionUpdate(queuedUpdate.nextSelection, queuedUpdate.options))
+                        .then(resolve)
+                        .catch(reject);
+                }, LINE_SELECTION_UPDATE_DEBOUNCE_MS);
+            });
+        }
+
+        shell.__lineRuntimeApi = {
+            updateSelection(nextSelection, options = {}) {
+                return queueSelectionUpdate(nextSelection, options);
+            },
+        };
+
         function updateViewport(start, span, immediate = false) {
             const next = clampViewport(start, span);
             const changed = next.start !== runtime.viewStart || next.span !== runtime.viewSpan;
@@ -2117,6 +2764,11 @@ function init_viewer_runtimes_3() {
             syncWindowControl();
             syncJumpInput();
             persistViewState();
+
+            const cachedWindow = getLineWindowRender(runtime, runtime.viewStart, runtime.viewSpan);
+            if (cachedWindow) {
+                applyCachedWindowSnapshot(cachedWindow);
+            }
 
             if (!changed) {
                 return false;
@@ -2510,6 +3162,12 @@ function init_viewer_runtimes_3() {
             rerenderAfterFullscreenChange();
         }
 
+        function stopShellEventPropagation(event) {
+            if (event?.target instanceof Element && shell.contains(event.target)) {
+                event.stopPropagation();
+            }
+        }
+
         function onFullscreenEsc(event) {
             if (event.key === "Escape" && runtime.fullscreenActive) {
                 event.preventDefault();
@@ -2552,9 +3210,19 @@ function init_viewer_runtimes_3() {
         updateRangeLabel();
         updateZoomLabel();
         persistViewState();
-        setMatrixStatus(statusElement, "Loading initial line range...", "info");
+        const cachedInitialWindow = getLineWindowRender(runtime);
+        if (cachedInitialWindow) {
+            applyCachedWindowSnapshot(cachedInitialWindow, {
+                statusMessage: "Restored cached line range. Refreshing...",
+            });
+        } else {
+            setMatrixStatus(statusElement, "Loading initial line range...", "info");
+        }
         void fetchLineRange();
 
+        shell.addEventListener("click", stopShellEventPropagation);
+        shell.addEventListener("change", stopShellEventPropagation);
+        shell.addEventListener("input", stopShellEventPropagation);
         canvas.addEventListener("wheel", onWheel, { passive: false });
         canvas.addEventListener("pointerdown", onPointerDown);
         canvas.addEventListener("pointermove", onPointerMove);
@@ -2636,6 +3304,9 @@ function init_viewer_runtimes_3() {
                 if (shell.__lineRuntimeCleanup === cleanup) {
                     delete shell.__lineRuntimeCleanup;
                 }
+                if (shell.__lineRuntimeApi) {
+                    delete shell.__lineRuntimeApi;
+                }
                 if (shell.__exportApi) {
                     delete shell.__exportApi;
                 }
@@ -2653,10 +3324,13 @@ function init_viewer_runtimes_3() {
                 window.removeEventListener("resize", onResize);
             }
             clearTimeout(resizeTimer);
+            clearRecoveryRetry();
             if (runtime.fetchTimer !== null) {
                 clearTimeout(runtime.fetchTimer);
                 runtime.fetchTimer = null;
             }
+            clearPendingSelectionUpdate();
+            cancelInFlightRequests();
             if (runtime.isPanning) {
                 endPan();
             }
@@ -2668,6 +3342,9 @@ function init_viewer_runtimes_3() {
             canvas.removeEventListener("pointercancel", onPointerCancel);
             canvas.removeEventListener("pointerleave", onPointerLeave);
             canvas.removeEventListener("keydown", onKeyDown);
+            shell.removeEventListener("click", stopShellEventPropagation);
+            shell.removeEventListener("change", stopShellEventPropagation);
+            shell.removeEventListener("input", stopShellEventPropagation);
             if (panToggleButton) {
                 panToggleButton.removeEventListener("click", onTogglePan);
             }
@@ -2730,6 +3407,9 @@ function init_viewer_runtimes_3() {
             LINE_RUNTIME_CLEANUPS.delete(cleanup);
             if (shell.__lineRuntimeCleanup === cleanup) {
                 delete shell.__lineRuntimeCleanup;
+            }
+            if (shell.__lineRuntimeApi) {
+                delete shell.__lineRuntimeApi;
             }
             if (shell.__exportApi) {
                 delete shell.__exportApi;
@@ -3133,6 +3813,7 @@ function init_viewer_runtimes_4() {
         };
     }
 
+
     function renderLineToolIcon(kind) {
         if (kind === "pan") {
             return `
@@ -3198,9 +3879,10 @@ function init_viewer_runtimes_4() {
     }
 
     function renderLinkedLineShellMarkup(config) {
+        const inlineShellClass = String(config?.inlineShellClass || "heatmap-inline-line-shell").trim();
         return `
     <div
-      class="line-chart-shell line-chart-shell-full heatmap-inline-line-shell"
+      class="line-chart-shell line-chart-shell-full ${escapeHtml(inlineShellClass)}"
       data-line-shell="true"
       data-line-file-key="${escapeHtml(config.fileKey || "")}"
       data-line-file-etag="${escapeHtml(config.fileEtag || "")}"
@@ -3314,6 +3996,7 @@ function init_viewer_runtimes_4() {
         const minStat = shell.querySelector("[data-heatmap-stat-min]");
         const maxStat = shell.querySelector("[data-heatmap-stat-max]");
         const rangeStat = shell.querySelector("[data-heatmap-stat-range]");
+        const runtimeNotice = shell.querySelector("[data-heatmap-runtime-notice]");
         const histogramRoot = shell.querySelector("[data-image-histogram-root]");
         const intensityOverlay = shell.querySelector("[data-heatmap-intensity-overlay]");
         const intensityWindow = shell.querySelector("[data-heatmap-intensity-window]");
@@ -3329,6 +4012,7 @@ function init_viewer_runtimes_4() {
         let linkedPlotCloseButton = shell.querySelector("[data-heatmap-plot-close]");
         const statusElement =
             shell.closest(".data-section")?.querySelector("[data-heatmap-status]") || null;
+        const previewLayout = shell.closest(".preview-layout");
 
         if (!canvasHost || !canvas) {
             return;
@@ -3447,6 +4131,10 @@ function init_viewer_runtimes_4() {
             loadedPhase: "preview",
             fullscreenActive: false,
             loadSequence: 0,
+            initialHighResLoading: false,
+            controlsLocked: false,
+            hasShownFullLoadedNotice: false,
+            noticeTimer: null,
             intensityEnabled: false,
             intensityMin: null,
             intensityMax: null,
@@ -3459,6 +4147,127 @@ function init_viewer_runtimes_4() {
 
         if (consumeHeatmapFullscreenRestore(selectionKey)) {
             runtime.fullscreenActive = true;
+        }
+
+        function clearRuntimeNoticeTimer() {
+            if (runtime.noticeTimer !== null) {
+                clearTimeout(runtime.noticeTimer);
+                runtime.noticeTimer = null;
+            }
+        }
+
+        function hideRuntimeNotice() {
+            clearRuntimeNoticeTimer();
+            if (!runtimeNotice) {
+                return;
+            }
+            runtimeNotice.hidden = true;
+            runtimeNotice.textContent = "";
+            runtimeNotice.classList.remove("info", "error", "is-visible");
+        }
+
+        function setRuntimeNotice(message, options = {}) {
+            if (!runtimeNotice) {
+                return;
+            }
+            const text = String(message || "").trim();
+            if (!text) {
+                hideRuntimeNotice();
+                return;
+            }
+            const tone = options.tone === "error" ? "error" : "info";
+            const autoHideMs = Math.max(0, Number(options.autoHideMs) || 0);
+            clearRuntimeNoticeTimer();
+            runtimeNotice.textContent = text;
+            runtimeNotice.hidden = false;
+            runtimeNotice.classList.remove("info", "error");
+            runtimeNotice.classList.add("is-visible", tone);
+            if (autoHideMs > 0) {
+                runtime.noticeTimer = setTimeout(() => {
+                    runtime.noticeTimer = null;
+                    if (runtime.destroyed || runtime.initialHighResLoading) {
+                        return;
+                    }
+                    hideRuntimeNotice();
+                }, autoHideMs);
+            }
+        }
+
+        function buildHighResLoadingNoticeText() {
+            return isImageMode ? "Loading full-resolution image..." : "Loading full-resolution heatmap...";
+        }
+
+        function buildHighResLoadedNoticeText() {
+            return isImageMode ? "Image fully loaded." : "Heatmap fully loaded.";
+        }
+
+        function getLockableHeatmapControls() {
+            const lockableElements = [];
+            const lockRoot = previewLayout || shell.closest(".preview-shell") || shell.parentElement;
+            const lockableSelectors = [
+                "[data-display-dim-select]",
+                "[data-fixed-index-range]",
+                "[data-fixed-index-number]",
+                "[data-fixed-index-play-action]",
+                "[data-dim-apply]",
+                "[data-dim-reset]",
+                "[data-heatmap-pan-toggle]",
+                "[data-heatmap-plot-toggle]",
+                "[data-heatmap-intensity-toggle]",
+                "[data-heatmap-zoom-in]",
+                "[data-heatmap-zoom-out]",
+                "[data-heatmap-reset-view]",
+                "[data-heatmap-fullscreen-toggle]",
+                "[data-heatmap-plot-close]",
+                "[data-heatmap-plot-axis]",
+            ];
+            if (!lockRoot) {
+                return lockableElements;
+            }
+            lockRoot.querySelectorAll(lockableSelectors.join(",")).forEach((element) => {
+                if (
+                    element instanceof HTMLButtonElement ||
+                    element instanceof HTMLInputElement ||
+                    element instanceof HTMLSelectElement
+                ) {
+                    lockableElements.push(element);
+                }
+            });
+            return lockableElements;
+        }
+
+        function setHeatmapControlsLocked(locked) {
+            const nextLocked = locked === true;
+            runtime.controlsLocked = nextLocked;
+            shell.classList.toggle("is-highres-loading", nextLocked);
+            canvasHost.classList.toggle("is-disabled", nextLocked);
+            canvasHost.setAttribute("aria-disabled", nextLocked ? "true" : "false");
+            if (nextLocked) {
+                if (!canvasHost.hasAttribute("data-prev-tabindex")) {
+                    canvasHost.setAttribute("data-prev-tabindex", canvasHost.getAttribute("tabindex") || "");
+                }
+                canvasHost.setAttribute("tabindex", "-1");
+            } else if (canvasHost.hasAttribute("data-prev-tabindex")) {
+                const previousTabIndex = canvasHost.getAttribute("data-prev-tabindex");
+                canvasHost.removeAttribute("data-prev-tabindex");
+                if (previousTabIndex) {
+                    canvasHost.setAttribute("tabindex", previousTabIndex);
+                } else {
+                    canvasHost.removeAttribute("tabindex");
+                }
+            }
+
+            getLockableHeatmapControls().forEach((control) => {
+                if (nextLocked) {
+                    if (!control.hasAttribute("data-runtime-prev-disabled")) {
+                        control.setAttribute("data-runtime-prev-disabled", control.disabled ? "1" : "0");
+                    }
+                    control.disabled = true;
+                } else if (control.hasAttribute("data-runtime-prev-disabled")) {
+                    control.disabled = control.getAttribute("data-runtime-prev-disabled") === "1";
+                    control.removeAttribute("data-runtime-prev-disabled");
+                }
+            });
         }
 
         function updateLabels() {
@@ -3806,6 +4615,7 @@ function init_viewer_runtimes_4() {
             runtime.maxSizeClamped = cachedData.maxSizeClamped === true;
             runtime.effectiveMaxSize = Number(cachedData.effectiveMaxSize) || HEATMAP_MAX_SIZE;
             runtime.loadedPhase = cachedData.phase === "highres" ? "highres" : "preview";
+            runtime.hasShownFullLoadedNotice = runtime.loadedPhase === "highres";
 
             // View cache stores interaction state (zoom/pan/plot mode/selection), separate from pixel data cache.
             const cachedView = HEATMAP_SELECTION_VIEW_CACHE.get(runtime.cacheKey);
@@ -4776,39 +5586,75 @@ function init_viewer_runtimes_4() {
         async function loadHighResHeatmap(options = {}) {
             const preserveViewState = options && options.preserveViewState === true;
             const forceFullLoad = options && options.forceFullLoad === true;
+            const lockControls = options && options.lockControls === true;
+            const announceLoaded = options && options.announceLoaded === true;
             const loadToken = ++runtime.loadSequence;
-            if (forceFullLoad) {
-                const fullResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
-                    preserveViewState,
-                    loadToken,
-                });
-                return fullResult.loaded === true;
+            let loaded = false;
+            if (lockControls) {
+                runtime.initialHighResLoading = true;
+                setHeatmapControlsLocked(true);
+                setRuntimeNotice(buildHighResLoadingNoticeText(), { tone: "info" });
             }
-            // Progressive loading: fast preview first (256), then full resolution (1024)
-            const PREVIEW_SIZE = 256;
-            const previewResult = await fetchHeatmapAtSize(PREVIEW_SIZE, "Loading heatmap preview...", {
-                preserveViewState,
-                loadToken,
-            });
-            if (runtime.destroyed || loadToken !== runtime.loadSequence) return false;
-            if (previewResult.loaded && HEATMAP_MAX_SIZE > PREVIEW_SIZE) {
-                // Small delay so the user sees the preview before the full load starts
-                await new Promise((r) => setTimeout(r, 50));
-                if (runtime.destroyed || loadToken !== runtime.loadSequence) return false;
-                const fullResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
+            try {
+                if (forceFullLoad) {
+                    const fullResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
+                        preserveViewState,
+                        loadToken,
+                    });
+                    loaded = fullResult.loaded === true;
+                    return loaded;
+                }
+                // Progressive loading: fast preview first (256), then full resolution (1024)
+                const PREVIEW_SIZE = 256;
+                const previewResult = await fetchHeatmapAtSize(PREVIEW_SIZE, "Loading heatmap preview...", {
                     preserveViewState,
                     loadToken,
                 });
-                return fullResult.loaded === true;
-            } else if (!previewResult.loaded) {
-                // Fallback: try full size directly
-                const fallbackResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading high-res heatmap...", {
-                    preserveViewState,
-                    loadToken,
-                });
-                return fallbackResult.loaded === true;
+                if (runtime.destroyed || loadToken !== runtime.loadSequence) {
+                    loaded = false;
+                    return false;
+                }
+                if (previewResult.loaded && HEATMAP_MAX_SIZE > PREVIEW_SIZE) {
+                    // Small delay so the user sees the preview before the full load starts
+                    await new Promise((r) => setTimeout(r, 50));
+                    if (runtime.destroyed || loadToken !== runtime.loadSequence) {
+                        loaded = false;
+                        return false;
+                    }
+                    const fullResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading full resolution...", {
+                        preserveViewState,
+                        loadToken,
+                    });
+                    loaded = fullResult.loaded === true;
+                    return loaded;
+                } else if (!previewResult.loaded) {
+                    // Fallback: try full size directly
+                    const fallbackResult = await fetchHeatmapAtSize(HEATMAP_MAX_SIZE, "Loading high-res heatmap...", {
+                        preserveViewState,
+                        loadToken,
+                    });
+                    loaded = fallbackResult.loaded === true;
+                    return loaded;
+                }
+                loaded = previewResult.loaded === true;
+                return loaded;
+            } finally {
+                if (lockControls) {
+                    runtime.initialHighResLoading = false;
+                    setHeatmapControlsLocked(false);
+                    if (runtime.destroyed) {
+                        hideRuntimeNotice();
+                    } else if (loaded && announceLoaded && !runtime.hasShownFullLoadedNotice) {
+                        runtime.hasShownFullLoadedNotice = true;
+                        setRuntimeNotice(buildHighResLoadedNoticeText(), {
+                            tone: "info",
+                            autoHideMs: 2200,
+                        });
+                    } else {
+                        hideRuntimeNotice();
+                    }
+                }
             }
-            return previewResult.loaded === true;
         }
 
         async function exportCsvDisplayed() {
@@ -5428,7 +6274,10 @@ function init_viewer_runtimes_4() {
         if (!restoredFromCache) {
             updateLabels();
             renderHeatmap();
-            void loadHighResHeatmap();
+            void loadHighResHeatmap({
+                lockControls: true,
+                announceLoaded: true,
+            });
         }
 
         canvas.addEventListener("wheel", onWheel, { passive: false });
@@ -5522,6 +6371,7 @@ function init_viewer_runtimes_4() {
             shell.removeEventListener("click", onShellClick);
             document.removeEventListener("keydown", onFullscreenEsc);
             stopIntensityDrag();
+            hideRuntimeNotice();
             if (runtime.fullscreenActive) {
                 rememberHeatmapFullscreen(runtime.selectionKey);
             }
@@ -5540,6 +6390,11 @@ function init_viewer_runtimes_4() {
 
         HEATMAP_RUNTIME_CLEANUPS.add(cleanup);
     }
+    if (typeof initializeHeatmapRuntime !== "undefined") {
+        moduleState.initializeHeatmapRuntime = initializeHeatmapRuntime;
+        global.initializeHeatmapRuntime = initializeHeatmapRuntime;
+    }
+
     if (typeof initializeHeatmapRuntime !== "undefined") {
         moduleState.initializeHeatmapRuntime = initializeHeatmapRuntime;
         global.initializeHeatmapRuntime = initializeHeatmapRuntime;

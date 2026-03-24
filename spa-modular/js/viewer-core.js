@@ -277,6 +277,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     var REQUIRED_IDS = [
         "viewer-app",
         "viewer-sidebar",
+        "viewer-sidebar-resizer",
         "tree-panel",
         "tree-list",
         "tree-status",
@@ -307,6 +308,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         return {
             viewerApp: rootDoc.getElementById("viewer-app"),
             viewerSidebar: rootDoc.getElementById("viewer-sidebar"),
+            viewerSidebarResizer: rootDoc.getElementById("viewer-sidebar-resizer"),
             treePanel: rootDoc.getElementById("tree-panel"),
             treeList: rootDoc.getElementById("tree-list"),
             treeStatus: rootDoc.getElementById("tree-status"),
