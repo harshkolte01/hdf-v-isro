@@ -6,7 +6,7 @@ window.__CONFIG__ = window.__CONFIG__ || {};
 // Production deployments can inject API_BASE_URL here without changing source modules.
 // In Docker/server environments, a web server pre-processing step can replace this value at startup.
 // Must be loaded BEFORE core/config.js which reads window.__CONFIG__.API_BASE_URL.
-window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.53.240.143:5000";
+window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "https://hdf-viewer-backend.vercel.app";
 
 
 
@@ -132,7 +132,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         return;
     }
 
-    var DEFAULT_API_BASE_URL = "http://152.53.240.143:5000";
+    var DEFAULT_API_BASE_URL = "https://hdf-viewer-backend.vercel.app";
 
     // Read runtime config injected by config/runtime-config.js before this script loaded
     var runtimeConfig =
@@ -3307,6 +3307,28 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             return runtimeApi && typeof runtimeApi.updateSelection === "function" ? runtimeApi : null;
         }
 
+        function resolveActiveLineRuntimeApi(snapshot) {
+            if (typeof document === "undefined") {
+                return null;
+            }
+
+            const shell = document.querySelector('[data-line-shell]:not(.heatmap-inline-line-shell)');
+            if (!shell) {
+                return null;
+            }
+
+            if ((shell.dataset.lineFileKey || "") !== String(snapshot.selectedFile || "")) {
+                return null;
+            }
+
+            if ((shell.dataset.linePath || "/") !== String(snapshot.selectedPath || "/")) {
+                return null;
+            }
+
+            const runtimeApi = shell.__lineRuntimeApi;
+            return runtimeApi && typeof runtimeApi.updateSelection === "function" ? runtimeApi : null;
+        }
+
         function clearFixedIndexPlaybackTimer() {
             if (fixedIndexPlaybackTimer !== null) {
                 clearTimeout(fixedIndexPlaybackTimer);
@@ -3427,17 +3449,30 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
         function resolveFixedIndexPlaybackContext(snapshot, requestedDim = null) {
             const activeTab = snapshot.displayTab;
+            const isHeatmapPlaybackTab = activeTab === "heatmap" || activeTab === "image";
+            const isLinePlaybackTab = activeTab === "line";
             if (
                 snapshot.route !== "viewer" ||
                 snapshot.viewMode !== "display" ||
                 snapshot.selectedNodeType !== "dataset" ||
-                (activeTab !== "heatmap" && activeTab !== "image") ||
-                snapshot.heatmapFullEnabled !== true
+                (!isHeatmapPlaybackTab && !isLinePlaybackTab)
             ) {
                 return null;
             }
 
-            const runtimeApi = resolveActiveHeatmapRuntimeApi(snapshot);
+            let runtimeApi = null;
+            if (isLinePlaybackTab) {
+                if (snapshot.lineFullEnabled !== true) {
+                    return null;
+                }
+                runtimeApi = resolveActiveLineRuntimeApi(snapshot);
+            } else {
+                if (snapshot.heatmapFullEnabled !== true) {
+                    return null;
+                }
+                runtimeApi = resolveActiveHeatmapRuntimeApi(snapshot);
+            }
+
             if (!runtimeApi) {
                 return null;
             }
@@ -3556,6 +3591,57 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 fixedIndices,
                 displayDimsParam,
                 fixedIndicesParam,
+                selectionKey,
+            };
+        }
+
+        function buildLineLiveSelection(snapshot, displayDims, fixedIndices) {
+            const displayDimsParam = buildDisplayDimsParam(displayDims) || "";
+            const fixedIndicesParam = buildFixedIndicesParam(fixedIndices) || "";
+            const nextState = {
+                ...snapshot,
+                displayConfig: {
+                    ...(snapshot.displayConfig || getDisplayConfigDefaults()),
+                    displayDims,
+                    fixedIndices,
+                    stagedDisplayDims: displayDims,
+                    stagedFixedIndices: fixedIndices,
+                },
+            };
+            const lineConfig =
+                typeof global.resolveLineRuntimeConfig === "function"
+                    ? global.resolveLineRuntimeConfig(nextState, snapshot.preview)
+                    : null;
+            const lineIndex = toSafeInteger(lineConfig?.lineIndex, null);
+            const lineDim = lineIndex === null ? null : String(lineConfig?.lineDim || "row");
+            const totalPoints = Math.max(0, toSafeInteger(lineConfig?.totalPoints, 0));
+            const selectionKey =
+                typeof lineConfig?.selectionKey === "string" && lineConfig.selectionKey
+                    ? lineConfig.selectionKey
+                    : typeof global.buildLineSelectionKey === "function"
+                        ? global.buildLineSelectionKey(
+                            snapshot.selectedFile,
+                            snapshot.selectedPath,
+                            displayDimsParam,
+                            fixedIndicesParam,
+                            lineIndex
+                        )
+                        : [
+                            snapshot.selectedFile || "no-file",
+                            snapshot.selectedPath || "/",
+                            displayDimsParam || "none",
+                            fixedIndicesParam || "none",
+                            lineIndex ?? "auto",
+                        ].join("|");
+
+            return {
+                displayDims,
+                fixedIndices,
+                displayDimsParam,
+                fixedIndicesParam,
+                lineIndex,
+                lineDim,
+                totalPoints,
                 selectionKey,
             };
         }
@@ -3730,18 +3816,28 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 const sourceSize = Math.max(0, toSafeInteger(size, shape[dimIndex]));
                 const max = Math.max(0, sourceSize - 1);
                 const normalizedValue = Math.max(0, Math.min(max, toSafeInteger(value, 0)));
-                const canLiveUpdateHeatmap =
+                const liveUpdateMode =
                     snapshot.route === "viewer" &&
                     snapshot.viewMode === "display" &&
                     snapshot.selectedNodeType === "dataset" &&
-                    (snapshot.displayTab === "heatmap" || snapshot.displayTab === "image") &&
-                    snapshot.heatmapFullEnabled === true &&
                     Array.isArray(appliedDims) &&
                     appliedDims.length === 2 &&
-                    areDisplayDimsEqual(stagedDims, appliedDims);
+                    areDisplayDimsEqual(stagedDims, appliedDims)
+                        ? snapshot.displayTab === "line" && snapshot.lineFullEnabled === true
+                            ? "line"
+                            : (snapshot.displayTab === "heatmap" || snapshot.displayTab === "image") &&
+                              snapshot.heatmapFullEnabled === true
+                                ? "heatmap"
+                                : null
+                        : null;
 
-                const heatmapRuntimeApi = canLiveUpdateHeatmap ? resolveActiveHeatmapRuntimeApi(snapshot) : null;
-                if (heatmapRuntimeApi) {
+                const selectionRuntimeApi =
+                    liveUpdateMode === "line"
+                        ? resolveActiveLineRuntimeApi(snapshot)
+                        : liveUpdateMode === "heatmap"
+                            ? resolveActiveHeatmapRuntimeApi(snapshot)
+                            : null;
+                if (selectionRuntimeApi) {
                     const currentAppliedFixed = buildNextFixedIndices(
                         normalizeFixedIndicesForShape(config.fixedIndices, shape, appliedDims),
                         appliedDims,
@@ -3768,19 +3864,29 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
                     let updatePromise = Promise.resolve(true);
                     if (!areFixedIndicesEqual(nextFixedIndices, currentAppliedFixed)) {
-                        const nextSelection = buildHeatmapLiveSelection(snapshot, appliedDims, nextFixedIndices);
+                        const nextSelection =
+                            liveUpdateMode === "line"
+                                ? buildLineLiveSelection(snapshot, appliedDims, nextFixedIndices)
+                                : buildHeatmapLiveSelection(snapshot, appliedDims, nextFixedIndices);
                         updatePromise = Promise.resolve(
-                            heatmapRuntimeApi.updateSelection(
-                            {
-                                displayDims: nextSelection.displayDimsParam,
-                                fixedIndices: nextSelection.fixedIndicesParam,
-                                selectionKey: nextSelection.selectionKey,
-                            },
-                            {
-                                immediate: interaction === "change",
-                                preserveViewState: true,
-                                forceFullLoad,
-                            }
+                            selectionRuntimeApi.updateSelection(
+                                {
+                                    displayDims: nextSelection.displayDimsParam,
+                                    fixedIndices: nextSelection.fixedIndicesParam,
+                                    selectionKey: nextSelection.selectionKey,
+                                    ...(liveUpdateMode === "line"
+                                        ? {
+                                            lineIndex: nextSelection.lineIndex,
+                                            lineDim: nextSelection.lineDim,
+                                            totalPoints: nextSelection.totalPoints,
+                                        }
+                                        : {}),
+                                },
+                                {
+                                    immediate: interaction === "change",
+                                    preserveViewState: true,
+                                    forceFullLoad,
+                                }
                             )
                         ).then((result) => result !== false);
                     }
@@ -5256,15 +5362,21 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const shape = controls.shape;
         const dims = controls.appliedDisplayDims;
         const fixedIndices = controls.appliedFixedIndices || {};
+        const dimensionLabels = Array.isArray(preview?.dimension_labels) ? preview.dimension_labels : [];
 
         if (!shape.length) {
             return {
                 supported: false,
+                shape: [],
+                displayDims: [],
+                fixedIndices: {},
+                dimensionLabels: [],
                 totalPoints: 0,
                 rowCount: 0,
                 displayDimsParam: "",
                 fixedIndicesParam: "",
                 lineIndex: null,
+                lineDim: null,
                 selectionKey: "",
             };
         }
@@ -5281,11 +5393,16 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
             return {
                 supported: totalPoints > 0,
+                shape,
+                displayDims: [],
+                fixedIndices: {},
+                dimensionLabels,
                 totalPoints,
                 rowCount: 1,
                 displayDimsParam: "",
                 fixedIndicesParam: "",
                 lineIndex: null,
+                lineDim: null,
                 selectionKey,
             };
         }
@@ -5293,11 +5410,16 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         if (!Array.isArray(dims) || dims.length !== 2) {
             return {
                 supported: false,
+                shape,
+                displayDims: [],
+                fixedIndices,
+                dimensionLabels,
                 totalPoints: 0,
                 rowCount: 0,
                 displayDimsParam: "",
                 fixedIndicesParam: "",
                 lineIndex: null,
+                lineDim: null,
                 selectionKey: "",
             };
         }
@@ -5319,11 +5441,16 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
         return {
             supported: rowCount > 0 && totalPoints > 0,
+            shape,
+            displayDims: dims,
+            fixedIndices,
+            dimensionLabels,
             totalPoints,
             rowCount,
             displayDimsParam,
             fixedIndicesParam,
             lineIndex,
+            lineDim: lineIndex === null ? null : "row",
             selectionKey,
         };
     }
@@ -6612,9 +6739,14 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const stagedFixed = controls.stagedFixedIndices || {};
         const dimensionLabels = Array.isArray(preview?.dimension_labels) ? preview.dimension_labels : [];
         const playingFixedDim = toSafeInteger(state.displayConfig?.playingFixedDim, null);
-        const showAutoplayControls = state.displayTab === "heatmap" || state.displayTab === "image";
+        const showAutoplayControls =
+            state.displayTab === "heatmap" ||
+            state.displayTab === "image" ||
+            state.displayTab === "line";
         const canAutoplayHiddenDims =
-            showAutoplayControls && state.heatmapFullEnabled === true;
+            state.displayTab === "line"
+                ? state.lineFullEnabled === true
+                : showAutoplayControls && state.heatmapFullEnabled === true;
 
         if (!appliedDims || !stagedDims) {
             return "";
@@ -6807,7 +6939,10 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
     const SHOW_HEATMAP_HISTOGRAM = false;
 
     // Feature flag: when true, hidden-dimension playback controls are rendered inside the Heatmap/Image panel shell.
-    const SHOW_HEATMAP_PANEL_PLAYBACK_CONTROLS = false;
+    const SHOW_HEATMAP_PANEL_PLAYBACK_CONTROLS = true;
+
+    // Feature flag: when true, hidden-dimension playback controls are rendered inside the Line panel shell.
+    const SHOW_LINE_PANEL_PLAYBACK_CONTROLS = true;
 
     // Renders the correct SVG icon for a toolbar button based on its kind string
     function renderToolIcon(kind) {
@@ -6923,6 +7058,24 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 ? preview.shape.length
                 : 0;
         const baseDtype = preview?.dtype || "";
+        const panelPlaybackControls =
+            SHOW_LINE_PANEL_PLAYBACK_CONTROLS === true &&
+            typeof global.renderFixedIndexControls === "function"
+                ? global.renderFixedIndexControls({
+                    shape: config.shape,
+                    displayDims: config.displayDims,
+                    fixedIndices: config.fixedIndices,
+                    dimensionLabels: config.dimensionLabels,
+                    playingFixedDim: toSafeInteger(state.displayConfig?.playingFixedDim, null),
+                    showPlayback: true,
+                    canAutoplayHiddenDims: state.lineFullEnabled === true,
+                    wrapperClassName: "line-panel-controls",
+                    containerClassName: "dim-sliders line-panel-dim-sliders",
+                    controlClassName: "line-panel-dim-slider",
+                    title: "Slice controls",
+                    titleClassName: "line-panel-controls-title",
+                })
+                : "";
         return `
     <div
       class="line-chart-shell line-chart-shell-full"
@@ -6935,6 +7088,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
       data-line-selection-key="${escapeHtml(config.selectionKey || "")}"
       data-line-total-points="${config.totalPoints}"
       data-line-index="${config.lineIndex ?? ""}"
+      data-line-dim="${escapeHtml(config.lineDim || "")}"
       data-line-compare-items="${escapeHtml(compareItemsPayload)}"
       data-line-base-shape="${escapeHtml(baseShape)}"
       data-line-base-ndim="${baseNdim}"
@@ -6990,6 +7144,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
           <span class="line-zoom-label" data-line-range-label="true">Range: --</span>
         </div>
       </div>
+      ${panelPlaybackControls}
       <div class="line-chart-stage">
         <div class="line-chart-canvas" data-line-canvas="true" tabindex="0" role="application" aria-label="Line chart">
           <svg
@@ -7017,7 +7172,6 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         const config = resolveLineRuntimeConfig(state, preview);
         const canLoadFull = config.supported && config.totalPoints > 0;
         const isEnabled = state.lineFullEnabled === true && canLoadFull;
-
         const statusText = !config.supported
             ? config.rowCount === 0
                 ? "Line full view requires at least 1 row in the selected Y dimension."
@@ -7080,7 +7234,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         >
           Clear compare
         </button>
-        <span class="${statusClass}" data-line-status="true">${escapeHtml(statusText)}</span>
+        <!-- <span class="${statusClass}" data-line-status="true">${escapeHtml(statusText)}</span> -->
       </div>
       <div class="line-compare-panel">
         <div class="line-compare-panel-label">
@@ -7396,7 +7550,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         >
           Load high-res
         </button>
-        <span class="${statusClass}" data-heatmap-status="true">${escapeHtml(statusText)}</span>
+        <!-- <span class="${statusClass}" data-heatmap-status="true">${escapeHtml(statusText)}</span> -->
       </div>
       ${content}
     </div>
@@ -7440,7 +7594,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         >
           Load high-res
         </button>
-        <span class="${statusClass}" data-heatmap-status="true">${escapeHtml(statusText)}</span>
+        <!-- <span class="${statusClass}" data-heatmap-status="true">${escapeHtml(statusText)}</span> -->
       </div>
       ${content}
     </div>
@@ -8538,6 +8692,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
         lineFullscreenRestore = null;
         return key === selectionKey && Date.now() <= expiresAt;
     }
+
+    const LINE_SELECTION_UPDATE_DEBOUNCE_MS = 140;
+
     function initializeLineRuntime(shell) {
         if (!shell) {
             return null;
@@ -8649,6 +8806,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             fetchTimer: null,
             requestSeq: 0,
             destroyed: false,
+            activeCancelKeys: new Set(),
             panEnabled: false,
             zoomClickEnabled: false,
             isPanning: false,
@@ -8673,6 +8831,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             zoomFocusX: null,
             fullscreenActive: false,
         };
+
+        let selectionUpdateTimer = null;
+        let pendingSelectionUpdate = null;
 
         if (consumeLineFullscreenRestore(selectionKey)) {
             runtime.fullscreenActive = true;
@@ -9406,7 +9567,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
         async function fetchLineRange() {
             if (runtime.destroyed) {
-                return;
+                return false;
             }
 
             const requestId = ++runtime.requestSeq;
@@ -9442,6 +9603,7 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 params.etag = runtime.fileEtag;
             }
 
+            const requestCancelKeys = [];
             try {
                 const comparePrecheckFailures = [];
                 const compareTargets = [];
@@ -9526,23 +9688,26 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
 
                 // Base and compare ranges are fetched together; compare failures do not block base rendering.
                 const settledResponses = await Promise.allSettled(
-                    requestTargets.map((target) =>
-                        getFileData(runtime.fileKey, target.path, params, {
+                    requestTargets.map((target) => {
+                        const cancelKey = `${runtime.selectionKey}|${target.path}`;
+                        requestCancelKeys.push(cancelKey);
+                        runtime.activeCancelKeys.add(cancelKey);
+                        return getFileData(runtime.fileKey, target.path, params, {
                             cancelPrevious: true,
-                            cancelKey: `${runtime.selectionKey}|${target.path}`,
-                        })
-                    )
+                            cancelKey,
+                        });
+                    })
                 );
 
                 if (runtime.destroyed || requestId !== runtime.requestSeq) {
-                    return;
+                    return false;
                 }
 
                 const baseOutcome = settledResponses[0];
                 if (!baseOutcome || baseOutcome.status !== "fulfilled") {
                     const baseError = baseOutcome?.reason;
                     if (baseError?.isAbort || baseError?.code === "ABORTED") {
-                        return;
+                        return false;
                     }
                     throw baseError || new Error("Failed to load base line dataset.");
                 }
@@ -9644,19 +9809,25 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                     `${runtime.qualityApplied === "exact" ? "Exact" : "Overview"} loaded ${baseSeries.points.length.toLocaleString()} points (step ${runtime.lineStep}).${compareLoadedText}`,
                     "info"
                 );
+                return true;
             } catch (error) {
                 if (runtime.destroyed) {
-                    return;
+                    return false;
                 }
 
                 if (error?.isAbort || error?.code === "ABORTED") {
-                    return;
+                    return false;
                 }
 
                 runtime.failedCompareTargets = [];
                 runtime.compareSeries = [];
                 updateLegend([], []);
                 setMatrixStatus(statusElement, error?.message || "Failed to load line range.", "error");
+                return false;
+            } finally {
+                requestCancelKeys.forEach((cancelKey) => {
+                    runtime.activeCancelKeys.delete(cancelKey);
+                });
             }
         }
 
@@ -9787,6 +9958,180 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             exportCsvDisplayed,
             exportCsvFull,
             exportPng,
+        };
+
+        function cancelInFlightRequests() {
+            runtime.activeCancelKeys.forEach((cancelKey) => {
+                cancelPendingRequest(cancelKey, "line-runtime-selection-update");
+            });
+            runtime.activeCancelKeys.clear();
+        }
+
+        function clearPendingSelectionUpdate() {
+            if (selectionUpdateTimer !== null) {
+                clearTimeout(selectionUpdateTimer);
+                selectionUpdateTimer = null;
+            }
+            pendingSelectionUpdate = null;
+        }
+
+        function restoreSelectionViewState(selectionKey) {
+            const cachedView = LINE_VIEW_CACHE.get(selectionKey);
+            if (!cachedView || typeof cachedView !== "object") {
+                return false;
+            }
+
+            runtime.qualityRequested = normalizeLineQuality(
+                cachedView.qualityRequested || runtime.qualityRequested
+            );
+            const restored = clampViewport(cachedView.start, cachedView.span);
+            runtime.viewStart = restored.start;
+            runtime.viewSpan = restored.span;
+            runtime.panEnabled = cachedView.panEnabled === true;
+            runtime.zoomClickEnabled = cachedView.zoomClickEnabled === true;
+            runtime.zoomFocusX = Number.isFinite(cachedView.zoomFocusX) ? cachedView.zoomFocusX : null;
+            if (runtime.panEnabled && runtime.zoomClickEnabled) {
+                runtime.zoomClickEnabled = false;
+            }
+            return true;
+        }
+
+        async function applySelectionUpdate(nextSelection, options = {}) {
+            if (runtime.destroyed || !nextSelection || typeof nextSelection !== "object") {
+                return false;
+            }
+
+            const nextDisplayDims =
+                typeof nextSelection.displayDims === "string" ? nextSelection.displayDims : runtime.displayDims;
+            const nextFixedIndices =
+                typeof nextSelection.fixedIndices === "string" ? nextSelection.fixedIndices : runtime.fixedIndices;
+            const hasLineIndex = Object.prototype.hasOwnProperty.call(nextSelection, "lineIndex");
+            const nextLineIndex = hasLineIndex
+                ? nextSelection.lineIndex === null
+                    ? null
+                    : toSafeInteger(nextSelection.lineIndex, runtime.lineIndex)
+                : runtime.lineIndex;
+            const hasTotalPoints = Object.prototype.hasOwnProperty.call(nextSelection, "totalPoints");
+            const nextTotalPoints = hasTotalPoints
+                ? Math.max(0, toSafeInteger(nextSelection.totalPoints, runtime.totalPoints))
+                : runtime.totalPoints;
+            const nextLineDimValue =
+                typeof nextSelection.lineDim === "string" ? nextSelection.lineDim : runtime.lineDim;
+            const nextLineDim =
+                nextLineIndex === null
+                    ? null
+                    : String(nextLineDimValue || "").trim().toLowerCase() === "col"
+                        ? "col"
+                        : "row";
+            const nextSelectionKey = String(
+                nextSelection.selectionKey ||
+                buildLineSelectionKey(runtime.fileKey, runtime.path, nextDisplayDims, nextFixedIndices, nextLineIndex)
+            );
+
+            const dimsChanged = nextDisplayDims !== runtime.displayDims;
+            const fixedChanged = nextFixedIndices !== runtime.fixedIndices;
+            const totalPointsChanged = nextTotalPoints !== runtime.totalPoints;
+            const lineIndexChanged = nextLineIndex !== runtime.lineIndex;
+            const lineDimChanged = nextLineDim !== runtime.lineDim;
+            const selectionChanged = nextSelectionKey !== runtime.selectionKey;
+            if (
+                !dimsChanged &&
+                !fixedChanged &&
+                !totalPointsChanged &&
+                !lineIndexChanged &&
+                !lineDimChanged &&
+                !selectionChanged
+            ) {
+                return true;
+            }
+
+            const preserveViewState = options.preserveViewState === true && !totalPointsChanged;
+            persistViewState();
+            if (runtime.fetchTimer !== null) {
+                clearTimeout(runtime.fetchTimer);
+                runtime.fetchTimer = null;
+            }
+            runtime.requestSeq += 1;
+            cancelInFlightRequests();
+
+            runtime.displayDims = nextDisplayDims || "";
+            runtime.fixedIndices = nextFixedIndices || "";
+            runtime.totalPoints = Math.max(0, nextTotalPoints);
+            runtime.lineIndex = nextLineIndex;
+            runtime.lineDim = nextLineDim;
+            runtime.selectionKey = nextSelectionKey;
+            runtime.minSpan = Math.max(1, Math.min(LINE_MIN_VIEW_SPAN, Math.max(1, runtime.totalPoints)));
+            shell.dataset.lineDisplayDims = runtime.displayDims;
+            shell.dataset.lineFixedIndices = runtime.fixedIndices;
+            shell.dataset.lineTotalPoints = String(runtime.totalPoints);
+            shell.dataset.lineIndex =
+                runtime.lineIndex === null || runtime.lineIndex === undefined ? "" : String(runtime.lineIndex);
+            shell.dataset.lineDim = runtime.lineDim || "";
+            shell.dataset.lineSelectionKey = runtime.selectionKey;
+            runtime.pendingZoomFocusX = null;
+
+            if (preserveViewState) {
+                const preserved = clampViewport(runtime.viewStart, runtime.viewSpan);
+                runtime.viewStart = preserved.start;
+                runtime.viewSpan = preserved.span;
+            } else if (!restoreSelectionViewState(runtime.selectionKey)) {
+                runtime.viewStart = 0;
+                const reset = clampViewport(0, runtime.totalPoints);
+                runtime.viewStart = reset.start;
+                runtime.viewSpan = reset.span;
+                runtime.zoomFocusX = null;
+                runtime.panEnabled = false;
+                runtime.zoomClickEnabled = false;
+            }
+
+            syncPanState();
+            syncZoomClickState();
+            updateRangeLabel();
+            updateZoomLabel();
+            syncWindowControl();
+            syncJumpInput();
+            hideHover();
+            persistViewState();
+            setMatrixStatus(statusElement, "Updating line slice...", "info");
+            return await fetchLineRange();
+        }
+
+        function queueSelectionUpdate(nextSelection, options = {}) {
+            pendingSelectionUpdate = {
+                nextSelection: nextSelection && typeof nextSelection === "object" ? { ...nextSelection } : {},
+                options: { ...options },
+            };
+
+            if (options && options.immediate === true) {
+                const immediateUpdate = pendingSelectionUpdate;
+                clearPendingSelectionUpdate();
+                return applySelectionUpdate(immediateUpdate.nextSelection, immediateUpdate.options);
+            }
+
+            if (selectionUpdateTimer !== null) {
+                clearTimeout(selectionUpdateTimer);
+            }
+
+            return new Promise((resolve, reject) => {
+                selectionUpdateTimer = setTimeout(() => {
+                    selectionUpdateTimer = null;
+                    const queuedUpdate = pendingSelectionUpdate;
+                    pendingSelectionUpdate = null;
+                    if (!queuedUpdate) {
+                        resolve(false);
+                        return;
+                    }
+                    Promise.resolve(applySelectionUpdate(queuedUpdate.nextSelection, queuedUpdate.options))
+                        .then(resolve)
+                        .catch(reject);
+                }, LINE_SELECTION_UPDATE_DEBOUNCE_MS);
+            });
+        }
+
+        shell.__lineRuntimeApi = {
+            updateSelection(nextSelection, options = {}) {
+                return queueSelectionUpdate(nextSelection, options);
+            },
         };
 
         function updateViewport(start, span, immediate = false) {
@@ -10318,6 +10663,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 if (shell.__lineRuntimeCleanup === cleanup) {
                     delete shell.__lineRuntimeCleanup;
                 }
+                if (shell.__lineRuntimeApi) {
+                    delete shell.__lineRuntimeApi;
+                }
                 if (shell.__exportApi) {
                     delete shell.__exportApi;
                 }
@@ -10339,6 +10687,8 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
                 clearTimeout(runtime.fetchTimer);
                 runtime.fetchTimer = null;
             }
+            clearPendingSelectionUpdate();
+            cancelInFlightRequests();
             if (runtime.isPanning) {
                 endPan();
             }
@@ -10412,6 +10762,9 @@ window.__CONFIG__.API_BASE_URL = window.__CONFIG__.API_BASE_URL || "http://152.5
             LINE_RUNTIME_CLEANUPS.delete(cleanup);
             if (shell.__lineRuntimeCleanup === cleanup) {
                 delete shell.__lineRuntimeCleanup;
+            }
+            if (shell.__lineRuntimeApi) {
+                delete shell.__lineRuntimeApi;
             }
             if (shell.__exportApi) {
                 delete shell.__exportApi;

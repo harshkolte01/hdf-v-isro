@@ -2444,6 +2444,11 @@ body.line-panel-fullscreen-active {
 
 .heatmap-panel-dim-slider .dim-slider-playback {
     margin-top: 0.6rem;
+    justify-content: flex-end;
+}
+
+.heatmap-panel-dim-slider .dim-playback-buttons {
+    display: none;
 }
 
 .heatmap-chart-shell.is-fullscreen .heatmap-panel-controls {
