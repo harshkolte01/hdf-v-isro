@@ -18,6 +18,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>HDF Viewer</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232563eb'/%3E%3Cpath d='M3 8h10M8 3v10' stroke='white' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E"
+    />
 
     <!-- Modular viewer styles. -->
     <link rel="stylesheet" href="style.css" />
@@ -58,6 +62,22 @@
           </div>
         </div>
       </aside>
+
+      <div
+        id="viewer-sidebar-resizer"
+        class="viewer-sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-controls="viewer-sidebar"
+        aria-label="Resize sidebar"
+        tabindex="0"
+      >
+        <span class="viewer-sidebar-resizer-grip" aria-hidden="true">
+          <span class="viewer-sidebar-resizer-dot"></span>
+          <span class="viewer-sidebar-resizer-dot"></span>
+          <span class="viewer-sidebar-resizer-dot"></span>
+        </span>
+      </div>
 
       <!-- Right side: top bar, tabs, charts, table preview, and dataset view. -->
       <section id="viewer-main" class="viewer-main">
