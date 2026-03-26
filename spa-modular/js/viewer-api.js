@@ -109,15 +109,33 @@
         }
     }
 
+    function toUserFacingApiMessage(message) {
+        const text = String(message || "").trim();
+        if (!text) {
+            return "";
+        }
+
+        const normalized = text.toLowerCase();
+        if (normalized.includes("file signature not found")) {
+            return "HDF4 files are not supported.";
+        }
+
+        return text;
+    }
+
     // Extracts the most useful error message from the response payload and wraps it in ApiError
     function createErrorFromResponse({ response, payload, url, method }) {
         const messageFromPayload =
             payload && typeof payload === "object"
                 ? payload.error || payload.message || null
-                : null;
+                : typeof payload === "string"
+                    ? payload
+                    : null;
+
+        const userMessage = toUserFacingApiMessage(messageFromPayload);
 
         return new ApiError({
-            message: messageFromPayload || `HTTP ${response.status}`,
+            message: userMessage || `HTTP ${response.status}`,
             status: response.status,
             code: "HTTP_ERROR",
             details: payload,
@@ -533,7 +551,7 @@
     // Throws a named Error if payload.success is false; used after every normalizeXxx call to surface backend errors
     function assertSuccess(payload, operation) {
         if (!payload.success) {
-            const message = payload.error || `${operation} failed`;
+            const message = toUserFacingApiMessage(payload.error) || `${operation} failed`;
             throw new Error(message);
         }
         return payload;
